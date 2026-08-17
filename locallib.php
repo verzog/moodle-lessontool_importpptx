@@ -52,7 +52,7 @@ function local_lessonimportpptx_process(
     // the CLI if a site needs to.
     $threshold = get_config('local_lessonimportpptx', 'asyncthreshold');
     $threshold = ($threshold === false || $threshold === '') ? 30 : (int) $threshold;
-    $count = local_lessonimportpptx_count($file);
+    $count = local_lessonimportpptx_count($file, $options);
 
     if ($count > $threshold) {
         $task = new \local_lessonimportpptx\task\import_task();
@@ -114,10 +114,16 @@ function local_lessonimportpptx_type(stored_file $file): string {
 /**
  * Counts the units (slides or pages) an upload will produce, per backend.
  *
+ * Counting mirrors the importer routing: a PDF is counted by page, an image-mode
+ * PowerPoint by its raw slide parts (so a Strict OOXML deck bound for LibreOffice
+ * is not blocked by the editable parser), and everything else by the editable
+ * parser's slide count.
+ *
  * @param stored_file $file The uploaded file.
+ * @param array $options Import options (including 'importmode').
  * @return int The number of lesson pages the import will create.
  */
-function local_lessonimportpptx_count(stored_file $file): int {
+function local_lessonimportpptx_count(stored_file $file, array $options = []): int {
     if (local_lessonimportpptx_type($file) === 'pdf') {
         $count = \local_lessonimportpptx\pdf_importer::count_pages($file);
         // Enforce the renderer's page cap here, at confirmation time, so an
@@ -131,6 +137,10 @@ function local_lessonimportpptx_count(stored_file $file): int {
             ]);
         }
         return $count;
+    }
+    $mode = (string) ($options['importmode'] ?? 'editable');
+    if ($mode === 'images' && \local_lessonimportpptx\office\renderer::is_available()) {
+        return \local_lessonimportpptx\office_importer::count_slides($file);
     }
     return \local_lessonimportpptx\importer::count_slides($file);
 }

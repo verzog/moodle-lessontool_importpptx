@@ -25,6 +25,7 @@
 namespace local_lessonimportpptx\office;
 
 use local_lessonimportpptx\pdf\renderer as pdfrenderer;
+use local_lessonimportpptx\pptx\package;
 
 /**
  * Optional "render as image" backend: converts a .pptx to a PDF with headless
@@ -70,12 +71,48 @@ class renderer {
         $dir = make_request_directory();
         $source = $dir . '/import.pptx';
         $pptx->copy_content_to($source);
+        self::assert_archive_within_limits($source);
 
         $pdfpath = self::convert_to_pdf($source, $dir);
         if ($pdfpath === null) {
             throw new \moodle_exception('errorofficerender', 'local_lessonimportpptx');
         }
         yield from (new pdfrenderer())->render_path($pdfpath, $maxdim);
+    }
+
+    /**
+     * Rejects archives whose declared uncompressed size could exhaust a worker.
+     *
+     * The editable parser enforces per-part and total inflation caps as it reads
+     * each part, but the image path hands the whole archive straight to
+     * LibreOffice, which would otherwise inflate it unchecked. Scanning the
+     * central directory's declared sizes up front applies the same zip-bomb
+     * guard before any conversion begins.
+     *
+     * @param string $path Absolute path to the .pptx on disk.
+     * @return void
+     * @throws \moodle_exception If any single part, or the total, exceeds the caps.
+     */
+    private static function assert_archive_within_limits(string $path): void {
+        $zip = new \ZipArchive();
+        if ($zip->open($path) !== true) {
+            throw new \moodle_exception('errornopptx', 'local_lessonimportpptx');
+        }
+        try {
+            $total = 0;
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $stat = $zip->statIndex($i);
+                if ($stat === false) {
+                    continue;
+                }
+                $total += (int) $stat['size'];
+                if ((int) $stat['size'] > package::MAX_PART_SIZE || $total > package::MAX_TOTAL_SIZE) {
+                    throw new \moodle_exception('errortoolarge', 'local_lessonimportpptx');
+                }
+            }
+        } finally {
+            $zip->close();
+        }
     }
 
     /**
@@ -87,7 +124,9 @@ class renderer {
      */
     private static function convert_to_pdf(string $source, string $dir): ?string {
         // A per-run user profile keeps concurrent conversions from clashing.
-        $profile = 'file://' . $dir . '/loprofile';
+        // UserInstallation wants a file URL, not a bare path, so a Windows
+        // drive path (C:\...) becomes file:///C:/... rather than file://C:\...
+        $profile = self::path_to_url($dir . '/loprofile');
         $result = self::run([
             self::binary(),
             '-env:UserInstallation=' . $profile,
@@ -99,6 +138,20 @@ class renderer {
         }
         $pdf = preg_replace('/\.pptx$/i', '.pdf', $source);
         return is_file($pdf) ? $pdf : null;
+    }
+
+    /**
+     * Converts a filesystem path to a file URL LibreOffice will accept.
+     *
+     * On POSIX the path is already absolute (/var/...), giving file:///var/...;
+     * on Windows it normalises separators and the drive prefix (C:\dir) to the
+     * file:///C:/dir form UserInstallation requires.
+     *
+     * @param string $path Absolute filesystem path.
+     * @return string The equivalent file:// URL.
+     */
+    private static function path_to_url(string $path): string {
+        return 'file://' . '/' . ltrim(str_replace('\\', '/', $path), '/');
     }
 
     /**
@@ -142,12 +195,17 @@ class renderer {
         stream_set_blocking($pipes[2], false);
         $out = '';
         $err = '';
+        $exitcode = -1;
         $deadline = time() + $timeout;
         do {
             $out .= (string) stream_get_contents($pipes[1]);
             $err .= (string) stream_get_contents($pipes[2]);
             $status = proc_get_status($process);
             if (!$status['running']) {
+                // proc_get_status reports the true exit code once and reaps the
+                // child, so a later proc_close() commonly returns -1. Keep the
+                // code observed here so a clean run is not read as a failure.
+                $exitcode = (int) $status['exitcode'];
                 break;
             }
             if (time() > $deadline) {
@@ -160,7 +218,8 @@ class renderer {
         $err .= (string) stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
-        $code = proc_close($process);
+        $closed = proc_close($process);
+        $code = $exitcode !== -1 ? $exitcode : $closed;
         return ['started' => true, 'code' => $code, 'out' => $out, 'err' => $err];
     }
 }

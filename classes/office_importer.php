@@ -61,6 +61,41 @@ class office_importer {
     }
 
     /**
+     * Counts the slides in a presentation for the image backend.
+     *
+     * The whole-deck image path does not use the transitional-OOXML parser, so a
+     * deck that parser rejects (for example Strict Open XML) can still be
+     * rendered by LibreOffice. Counting its slide parts straight from the archive
+     * keeps the confirmation count and async threshold working for those decks,
+     * instead of failing them at the counting step the editable path uses.
+     *
+     * @param \stored_file $pptx The uploaded presentation.
+     * @return int The number of slide parts in the package.
+     * @throws \moodle_exception If the file is not a readable .pptx package.
+     */
+    public static function count_slides(\stored_file $pptx): int {
+        $dir = make_request_directory();
+        $path = $dir . '/count.pptx';
+        $pptx->copy_content_to($path);
+        $zip = new \ZipArchive();
+        if ($zip->open($path) !== true) {
+            throw new \moodle_exception('errornopptx', 'local_lessonimportpptx');
+        }
+        try {
+            $count = 0;
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $name = $zip->getNameIndex($i);
+                if ($name !== false && preg_match('#^ppt/slides/slide\d+\.xml$#', $name)) {
+                    $count++;
+                }
+            }
+            return $count;
+        } finally {
+            $zip->close();
+        }
+    }
+
+    /**
      * Imports the presentation, creating one image content page per slide.
      *
      * @param \stored_file $pptx The uploaded presentation.
@@ -76,22 +111,39 @@ class office_importer {
         try {
             $renderer = $this->renderer ?? new renderer();
             $stagedir = make_request_directory();
-            $created = 0;
 
+            // Render the whole deck to staged files BEFORE opening the transaction:
+            // the LibreOffice conversion and rasterisation can run up to the
+            // conversion timeout, and holding a delegated transaction open that
+            // long trips idle-transaction limits on some databases. A staging
+            // failure here aborts the whole import (so an adhoc retry can re-run
+            // it cleanly) rather than silently committing a deck with a slide missing.
+            $staged = [];
+            foreach ($renderer->render_pages($pptx, $this->imagemaxdim) as [$page, $filename, $bytes]) {
+                $file = $stagedir . '/' . $page;
+                if (file_put_contents($file, $bytes) === false) {
+                    throw new \moodle_exception('errorofficerender', 'local_lessonimportpptx');
+                }
+                $staged[] = [
+                    'title' => get_string('slidetitle', 'local_lessonimportpptx', $page),
+                    'filename' => $filename,
+                    'path' => $file,
+                ];
+            }
+
+            $created = 0;
             $transaction = $DB->start_delegated_transaction();
             try {
-                foreach ($renderer->render_pages($pptx, $this->imagemaxdim) as [$page, $filename, $bytes]) {
-                    $title = get_string('slidetitle', 'local_lessonimportpptx', $page);
-                    $html = '<img src="@@PLUGINFILE@@/' . $filename . '" alt="" class="img-fluid">';
-                    // Stage the rendered image so the writer's single (pathname based)
-                    // code path applies and only one page is held in memory.
-                    $staged = $stagedir . '/' . $page;
-                    if (file_put_contents($staged, $bytes) === false) {
-                        continue;
-                    }
-                    unset($bytes);
-                    page_writer::write($this->lesson, $this->context, $title, $html, [$filename => $staged]);
-                    @unlink($staged);
+                foreach ($staged as $item) {
+                    $html = '<img src="@@PLUGINFILE@@/' . $item['filename']
+                        . '" alt="' . s($item['title']) . '" class="img-fluid">';
+                    page_writer::write(
+                        $this->lesson,
+                        $this->context,
+                        $item['title'],
+                        $html,
+                        [$item['filename'] => $item['path']]
+                    );
                     $created++;
                 }
 

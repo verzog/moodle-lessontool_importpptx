@@ -129,7 +129,9 @@ if ($data = $mform->get_data()) {
     }
 
     try {
-        $count = local_lessonimportpptx_count($file);
+        $count = local_lessonimportpptx_count($file, [
+            'importmode' => (string) ($data->importmode ?? 'editable'),
+        ]);
     } catch (\moodle_exception $e) {
         \local_lessonimportpptx\pending_file::delete($context, $pendingid);
         redirect($PAGE->url, $e->getMessage(), null, \core\output\notification::NOTIFY_ERROR);

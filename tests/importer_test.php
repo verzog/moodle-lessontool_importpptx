@@ -927,6 +927,13 @@ final class importer_test extends \advanced_testcase {
 
         // A stub renderer stands in for LibreOffice + poppler, yielding fixed pages.
         $renderer = new class extends \local_lessonimportpptx\office\renderer {
+            /**
+             * Yields two fixed pages in place of a real LibreOffice render.
+             *
+             * @param \stored_file $pptx The (ignored) uploaded presentation.
+             * @param int $maxdim The (ignored) maximum image dimension.
+             * @return \Generator Yields [slidenumber, filename, bytes] arrays.
+             */
             public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
                 yield [1, 'page-1.png', 'PNGONE'];
                 yield [2, 'page-2.png', 'PNGTWO'];
@@ -948,6 +955,15 @@ final class importer_test extends \advanced_testcase {
             '/',
             'page-1.png'
         ));
+    }
+
+    /**
+     * The image backend's raw slide counter counts slide parts from the archive,
+     * without invoking the editable parser.
+     */
+    public function test_office_count_slides(): void {
+        $this->resetAfterTest();
+        $this->assertSame(9, \local_lessonimportpptx\office_importer::count_slides($this->make_stored_file()));
     }
 
     /**
