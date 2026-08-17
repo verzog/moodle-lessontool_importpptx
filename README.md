@@ -74,6 +74,14 @@ Neither affects the core PowerPoint text/image path, which stays pure PHP.
   number of short lines is captioned, each caption above its image.
 - **SmartArt and tables.** SmartArt text is recovered as a list; tables become
   HTML tables with the first row as headers.
+- **Shape diagrams.** A slide built from drawn shapes — labelled boxes connected
+  by block arrows (a process or flow diagram) — is reconstructed as a single
+  inline **SVG** figure, in pure PHP, preserving the boxes, their fill and
+  outline colours (resolved through the deck's theme), the arrows and connectors,
+  and each box's text. Reconstruction only triggers for genuinely labelled
+  diagrams (two or more captioned boxes) on slides that are not led by a photo,
+  so ordinary photo and bullet slides are unaffected and stray annotation shapes
+  drawn over a picture are not turned into noise.
 - **Section dividers.** A slide with a full-height coloured side panel (detected by
   geometry, using the slide's own fill colour) becomes a styled section page.
   Lesson has no page hierarchy, so — unlike the Book version — the following
@@ -143,6 +151,12 @@ background-task threshold defaults to 30 slides.
   the lesson's own editor.
 - Lesson has no page hierarchy, so section dividers are styled but not nested.
 - SmartArt is flattened to a list — its hierarchy is not preserved.
+- Shape-diagram reconstruction targets labelled box-and-arrow diagrams. It draws
+  rectangles, rounded rectangles, ellipses, straight connectors and the four
+  block-arrow directions; other custom geometry is approximated by its bounding
+  box, and gradient/picture shape fills are not reproduced. A diagram that mixes
+  shapes with a large photo, or whose boxes carry no text, is left as extracted
+  text and images rather than reconstructed.
 - Grids re-flow images into an even layout rather than reproducing a slide's exact
   geometry.
 - Complex slides (overlapping shapes, charts, animations, embedded video, WordArt)
