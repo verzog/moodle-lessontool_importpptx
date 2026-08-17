@@ -405,8 +405,10 @@ class slide {
 
         // Drop a lone, very short label on a plain text shape (e.g. a corner "A-T"
         // badge): furniture, not content. Drawn diagram nodes are exempt.
-        if (!$isvector && count($paras) === 1
-                && \core_text::strlen(trim(strip_tags($paras[0]['text']))) <= self::BADGE_MAX_CHARS) {
+        if (
+            !$isvector && count($paras) === 1
+                && \core_text::strlen(trim(strip_tags($paras[0]['text']))) <= self::BADGE_MAX_CHARS
+        ) {
             return;
         }
 
