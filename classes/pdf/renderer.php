@@ -160,6 +160,12 @@ class renderer {
      * @return array The run result with started, code, out and err keys.
      */
     private static function run(array $command): array {
+        // Hardened hosts disable proc_open entirely; report "not started" so the
+        // PDF backend is simply unavailable instead of a fatal error blocking the
+        // pure-PHP PowerPoint path.
+        if (!function_exists('proc_open')) {
+            return ['started' => false, 'code' => -1, 'out' => '', 'err' => ''];
+        }
         $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $pipes = [];
         $process = @proc_open($command, $descriptors, $pipes);

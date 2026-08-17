@@ -98,7 +98,18 @@ function local_lessonimportpptx_type(stored_file $file): string {
  */
 function local_lessonimportpptx_count(stored_file $file): int {
     if (local_lessonimportpptx_type($file) === 'pdf') {
-        return \local_lessonimportpptx\pdf_importer::count_pages($file);
+        $count = \local_lessonimportpptx\pdf_importer::count_pages($file);
+        // Enforce the renderer's page cap here, at confirmation time, so an
+        // over-limit PDF is rejected with a clear message instead of being
+        // queued as a background task that can only ever fail.
+        $max = \local_lessonimportpptx\pdf\renderer::MAX_PAGES;
+        if ($count > $max) {
+            throw new \moodle_exception('errortoomanypages', 'local_lessonimportpptx', '', (object) [
+                'count' => $count,
+                'max' => $max,
+            ]);
+        }
+        return $count;
     }
     return \local_lessonimportpptx\importer::count_slides($file);
 }

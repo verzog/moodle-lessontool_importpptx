@@ -44,6 +44,29 @@ class page_writer {
     /** @var int Jump meaning "next page" (LESSON_NEXTPAGE); ends the lesson on the last page. */
     const JUMP_NEXTPAGE = -1;
 
+    /** @var int Seconds to wait for the per-lesson import lock before giving up. */
+    const LOCK_TIMEOUT = 10;
+
+    /**
+     * Acquires the per-lesson import lock, so two imports (or two writers within
+     * them) cannot both read the same chain tail and orphan each other's pages.
+     *
+     * Callers must release the returned lock in a finally block, and should
+     * acquire it before opening any database transaction.
+     *
+     * @param int $lessonid The lesson id the import will append to.
+     * @return \core\lock\lock The held lock.
+     * @throws \moodle_exception If the lock cannot be obtained in time.
+     */
+    public static function acquire_lock(int $lessonid): \core\lock\lock {
+        $factory = \core\lock\lock_config::get_lock_factory('local_lessonimportpptx');
+        $lock = $factory->get_lock('lesson' . $lessonid, self::LOCK_TIMEOUT);
+        if (!$lock) {
+            throw new \moodle_exception('errorlocked', 'local_lessonimportpptx');
+        }
+        return $lock;
+    }
+
     /**
      * Writes one content page at the end of the lesson and returns its id.
      *

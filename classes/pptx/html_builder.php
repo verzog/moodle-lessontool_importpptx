@@ -68,7 +68,7 @@ class html_builder {
      */
     public function build(\stdClass $parsed): \stdClass {
         $this->images = [];
-        if ($parsed->section !== null && $parsed->section->panelright !== null) {
+        if ($parsed->section !== null) {
             return $this->build_section($parsed);
         }
 
@@ -88,7 +88,12 @@ class html_builder {
     /**
      * Builds a section-divider page as a coloured hero plus content.
      *
-     * @param \stdClass $parsed The parsed slide (with a geometry-detected panel).
+     * Geometry-detected dividers carry a panel edge: text overlapping the panel
+     * becomes the plate label. A divider detected only through the section-header
+     * layout has no panel geometry, so its plate is labelled with the slide title
+     * instead — either way the page renders as a styled section hero.
+     *
+     * @param \stdClass $parsed The parsed slide (section is non-null).
      * @return \stdClass The page object (see {@see html_builder::build()}).
      */
     private function build_section(\stdClass $parsed): \stdClass {
@@ -98,7 +103,7 @@ class html_builder {
         $overlay = [];
         $rest = [];
         foreach ($parsed->blocks as $b) {
-            if ($b->type === block::TYPE_TEXT && $b->x < $panelright) {
+            if ($panelright !== null && $b->type === block::TYPE_TEXT && $b->x < $panelright) {
                 $overlay[] = $b;
             } else {
                 $rest[] = $b;
@@ -120,6 +125,15 @@ class html_builder {
         $title = $parsed->title;
         if ($title === null) {
             [$title, $rest] = $this->promote_title(reading_order::sort($rest));
+        }
+
+        // A layout-detected divider has no panel text: label the plate with the
+        // section title so the hero still reads as a divider.
+        if ($panelright === null && empty($lines)) {
+            $label = $title ?? get_string('sectiondefault', 'local_lessonimportpptx');
+            if (trim($label) !== '') {
+                $lines[] = s($label);
+            }
         }
 
         $lead = array_values(array_filter($rest, static function (block $b): bool {

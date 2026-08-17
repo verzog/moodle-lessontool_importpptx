@@ -89,32 +89,48 @@ class importer {
         global $DB;
 
         $maxdim = $this->imagemaxdim;
-        $path = self::stage($pptx);
-        $package = new package($path);
-        $builder = new html_builder($this->sectioncolour);
 
+        // The per-lesson lock serialises concurrent imports so page-chain appends
+        // cannot race; the transaction makes the whole import atomic, so a failure
+        // part-way through (or an adhoc-task retry after one) never leaves or
+        // duplicates partial pages.
+        $lock = page_writer::acquire_lock($this->lesson->id);
         try {
-            $slidepaths = $package->get_slide_paths();
-            $created = 0;
+            $path = self::stage($pptx);
+            $package = new package($path);
+            $builder = new html_builder($this->sectioncolour);
 
-            foreach ($slidepaths as $index => $slidepath) {
-                $parsed = (new slide($package, $slidepath))->parse();
-                $page = $builder->build($parsed);
+            try {
+                $slidepaths = $package->get_slide_paths();
+                $created = 0;
 
-                $title = $page->title;
-                if ($title === null || trim($title) === '') {
-                    $title = get_string('slidetitle', 'local_lessonimportpptx', $index + 1);
+                $transaction = $DB->start_delegated_transaction();
+                try {
+                    foreach ($slidepaths as $index => $slidepath) {
+                        $parsed = (new slide($package, $slidepath))->parse();
+                        $page = $builder->build($parsed);
+
+                        $title = $page->title;
+                        if ($title === null || trim($title) === '') {
+                            $title = get_string('slidetitle', 'local_lessonimportpptx', $index + 1);
+                        }
+
+                        $this->write_page($package, $title, $page->html, $page->images, $maxdim);
+                        $created++;
+                    }
+
+                    $DB->set_field('lesson', 'timemodified', time(), ['id' => $this->lesson->id]);
+                    $transaction->allow_commit();
+                } catch (\Throwable $e) {
+                    $transaction->rollback($e);
                 }
 
-                $this->write_page($package, $title, $page->html, $page->images, $maxdim);
-                $created++;
+                return $created;
+            } finally {
+                $package->close();
             }
-
-            $DB->set_field('lesson', 'timemodified', time(), ['id' => $this->lesson->id]);
-
-            return $created;
         } finally {
-            $package->close();
+            $lock->release();
         }
     }
 

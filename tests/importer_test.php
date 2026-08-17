@@ -324,6 +324,91 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A text box whose own list style switches bullets off (a:lstStyle/a:buNone)
+     * renders as paragraphs even when its paragraphs carry no a:pPr of their own.
+     */
+    public function test_list_style_bunone_renders_as_paragraphs(): void {
+        $sptree = '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="838200" y="1825625"/><a:ext cx="10515600" cy="4351338"/></a:xfrm></p:spPr>'
+            . '<p:txBody><a:bodyPr/>'
+            . '<a:lstStyle><a:lvl1pPr><a:buNone/></a:lvl1pPr></a:lstStyle>'
+            . '<a:p><a:r><a:t>First prose paragraph.</a:t></a:r></a:p>'
+            . '<a:p><a:r><a:t>Second prose paragraph.</a:t></a:r></a:p>'
+            . '</p:txBody></p:sp>';
+
+        $page = $this->build_slide($sptree);
+        $this->assertStringContainsString('<p>First prose paragraph.</p>', $page->html);
+        $this->assertStringContainsString('<p>Second prose paragraph.</p>', $page->html);
+        $this->assertStringNotContainsString('<ul>', $page->html);
+    }
+
+    /**
+     * A paragraph-level bullet (a:buChar) still wins over a list style that
+     * switches bullets off, so mixed boxes keep their explicit bullets.
+     */
+    public function test_paragraph_bullet_overrides_list_style(): void {
+        $sptree = '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="838200" y="1825625"/><a:ext cx="10515600" cy="4351338"/></a:xfrm></p:spPr>'
+            . '<p:txBody><a:bodyPr/>'
+            . '<a:lstStyle><a:lvl1pPr><a:buNone/></a:lvl1pPr></a:lstStyle>'
+            . '<a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:t>Bulleted anyway.</a:t></a:r></a:p>'
+            . '<a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:t>Also bulleted.</a:t></a:r></a:p>'
+            . '</p:txBody></p:sp>';
+
+        $page = $this->build_slide($sptree);
+        $this->assertStringContainsString('<ul><li>Bulleted anyway.</li><li>Also bulleted.</li></ul>', $page->html);
+    }
+
+    /**
+     * A slide detected as a divider only through its section-header layout is
+     * still rendered as a section hero, with the title on the fallback plate.
+     */
+    public function test_layout_detected_section_gets_plate(): void {
+        $nsp = package::NS_P;
+        $sptree = '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/>'
+            . '<p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="838200" y="1825625"/><a:ext cx="10515600" cy="1325625"/></a:xfrm></p:spPr>'
+            . '<p:txBody><a:bodyPr/><a:p><a:r><a:t>Getting Around</a:t></a:r></a:p></p:txBody></p:sp>';
+        $layout = '<?xml version="1.0"?><p:sldLayout xmlns:p="' . $nsp . '" type="secHead"/>';
+
+        $page = $this->build_slide(
+            $sptree,
+            ['rId9' => '../slideLayouts/slideLayout1.xml'],
+            ['ppt/slideLayouts/slideLayout1.xml' => $layout]
+        );
+        $this->assertTrue($page->issection);
+        $this->assertSame('Getting Around', $page->title);
+        $this->assertStringContainsString('local-lessonimportpptx-plate', $page->html);
+        // No panel geometry to read a colour from, so the fallback colour is used.
+        $this->assertStringContainsString('background-color:#442980', $page->html);
+        $this->assertStringContainsString('Getting Around', $page->html);
+    }
+
+    /**
+     * The cleanup task removes staged uploads past the retention window and
+     * keeps fresh ones.
+     */
+    public function test_cleanup_task_removes_stale_uploads(): void {
+        global $DB;
+        $this->resetAfterTest();
+
+        $stale = $this->make_named_file('stale.pptx', 'x', 11);
+        $fresh = $this->make_named_file('fresh.pptx', 'x', 12);
+        $DB->set_field('files', 'timecreated', time() - 8 * DAYSECS, ['id' => $stale->get_id()]);
+
+        (new \local_lessonimportpptx\task\cleanup_task())->execute();
+
+        $fs = get_file_storage();
+        $context = \context_system::instance();
+        $this->assertFalse(
+            $fs->file_exists($context->id, 'local_lessonimportpptx', 'import', 11, '/', 'stale.pptx')
+        );
+        $this->assertTrue(
+            $fs->file_exists($context->id, 'local_lessonimportpptx', 'import', 12, '/', 'fresh.pptx')
+        );
+    }
+
+    /**
      * WMF/EMF vector images are referenced as PNG (the importer converts them).
      */
     public function test_wmf_image_referenced_as_png(): void {

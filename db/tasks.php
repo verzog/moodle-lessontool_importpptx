@@ -15,11 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Version details for the PowerPoint import tool for the Lesson module.
- *
- * The Lesson module has no subplugin framework (there is no "lessontool"
- * plugin type in core Moodle), so this importer ships as a local plugin that
- * attaches itself to each lesson's settings navigation.
+ * Scheduled task definitions for the PowerPoint import tool for Lesson.
  *
  * @package    local_lessonimportpptx
  * @copyright  2026 Vernon Spain
@@ -28,11 +24,14 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->component = 'local_lessonimportpptx';
-$plugin->version   = 2026081701;
-$plugin->requires  = 2025041400;
-$plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.0.0';
-$plugin->dependencies = [
-    'mod_lesson' => ANY_VERSION,
+$tasks = [
+    [
+        'classname' => 'local_lessonimportpptx\task\cleanup_task',
+        'blocking' => 0,
+        'minute' => 'R',
+        'hour' => 'R',
+        'day' => '*',
+        'month' => '*',
+        'dayofweek' => '*',
+    ],
 ];

@@ -73,27 +73,42 @@ class pdf_importer {
     public function import(\stored_file $pdf): int {
         global $DB;
 
-        $renderer = new renderer();
-        $stagedir = make_request_directory();
-        $created = 0;
-        foreach ($renderer->render_pages($pdf, $this->imagemaxdim) as [$page, $filename, $bytes]) {
-            $title = get_string('pagetitle', 'local_lessonimportpptx', $page);
-            $html = '<img src="@@PLUGINFILE@@/' . $filename . '" alt="" class="img-fluid">';
-            // Stage the rendered image on disk so the writer's single (pathname
-            // based) code path applies and only one page is held in memory.
-            $staged = $stagedir . '/' . $page;
-            if (file_put_contents($staged, $bytes) === false) {
-                continue;
-            }
-            unset($bytes);
-            page_writer::write($this->lesson, $this->context, $title, $html, [$filename => $staged]);
-            @unlink($staged);
-            $created++;
-        }
+        // Same discipline as the PowerPoint path: the lock serialises concurrent
+        // appends to the page chain, and the transaction makes the import atomic
+        // so a failed run (or adhoc retry) never leaves or duplicates partial pages.
+        $lock = page_writer::acquire_lock($this->lesson->id);
+        try {
+            $renderer = new renderer();
+            $stagedir = make_request_directory();
+            $created = 0;
 
-        if ($created > 0) {
-            $DB->set_field('lesson', 'timemodified', time(), ['id' => $this->lesson->id]);
+            $transaction = $DB->start_delegated_transaction();
+            try {
+                foreach ($renderer->render_pages($pdf, $this->imagemaxdim) as [$page, $filename, $bytes]) {
+                    $title = get_string('pagetitle', 'local_lessonimportpptx', $page);
+                    $html = '<img src="@@PLUGINFILE@@/' . $filename . '" alt="" class="img-fluid">';
+                    // Stage the rendered image on disk so the writer's single (pathname
+                    // based) code path applies and only one page is held in memory.
+                    $staged = $stagedir . '/' . $page;
+                    if (file_put_contents($staged, $bytes) === false) {
+                        continue;
+                    }
+                    unset($bytes);
+                    page_writer::write($this->lesson, $this->context, $title, $html, [$filename => $staged]);
+                    @unlink($staged);
+                    $created++;
+                }
+
+                if ($created > 0) {
+                    $DB->set_field('lesson', 'timemodified', time(), ['id' => $this->lesson->id]);
+                }
+                $transaction->allow_commit();
+            } catch (\Throwable $e) {
+                $transaction->rollback($e);
+            }
+            return $created;
+        } finally {
+            $lock->release();
         }
-        return $created;
     }
 }
