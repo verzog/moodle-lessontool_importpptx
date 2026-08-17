@@ -202,9 +202,10 @@ class renderer {
             $err .= (string) stream_get_contents($pipes[2]);
             $status = proc_get_status($process);
             if (!$status['running']) {
-                // proc_get_status reports the true exit code once and reaps the
-                // child, so a later proc_close() commonly returns -1. Keep the
-                // code observed here so a clean run is not read as a failure.
+                // Once the child exits, proc_get_status reports the true exit
+                // code and reaps it, so a later proc_close() commonly returns
+                // -1. Keep the code observed here so a clean run is not read
+                // as a failure.
                 $exitcode = (int) $status['exitcode'];
                 break;
             }
