@@ -497,6 +497,8 @@ final class importer_test extends \advanced_testcase {
     public function test_full_import_into_lesson(): void {
         global $DB;
         $this->resetAfterTest();
+        // The lesson generator prepares draft file areas, which needs a real user.
+        $this->setAdminUser();
 
         $course = $this->getDataGenerator()->create_course();
         $lesson = $this->getDataGenerator()->create_module('lesson', ['course' => $course->id]);
@@ -566,6 +568,8 @@ final class importer_test extends \advanced_testcase {
     public function test_import_appends_after_existing_pages(): void {
         global $DB;
         $this->resetAfterTest();
+        // The lesson generator prepares draft file areas, which needs a real user.
+        $this->setAdminUser();
 
         $course = $this->getDataGenerator()->create_course();
         $lesson = $this->getDataGenerator()->create_module('lesson', ['course' => $course->id]);
@@ -642,6 +646,7 @@ final class importer_test extends \advanced_testcase {
     public function test_pdf_import(): void {
         global $DB;
         $this->resetAfterTest();
+        $this->setAdminUser();
         if (!\local_lessonimportpptx\pdf\renderer::is_available()) {
             $this->markTestSkipped('The poppler utilities (pdfinfo, pdftoppm) are not installed on this host.');
         }
