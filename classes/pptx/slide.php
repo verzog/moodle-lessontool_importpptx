@@ -44,6 +44,9 @@ class slide {
     /** @var int Sentinel offset for shapes with no explicit transform (sorts last). */
     const NO_OFFSET = 1000000000000;
 
+    /** @var float Picture area (as a fraction of the slide) that marks a slide as photo-led. */
+    const PHOTO_AREA_FRACTION = 0.06;
+
     /** @var package The owning package (for rels/diagram resolution). */
     private package $package;
 
@@ -52,6 +55,18 @@ class slide {
 
     /** @var array Relationship id => resolved zip path for this slide. */
     private array $rels;
+
+    /** @var theme|null Lazily-loaded scheme-colour resolver for this slide. */
+    private ?theme $theme = null;
+
+    /** @var shape[] Vector diagram shapes collected from this slide. */
+    private array $vectors = [];
+
+    /** @var block[] Text blocks that mirror a vector shape's label (dropped if a diagram forms). */
+    private array $vectortextblocks = [];
+
+    /** @var bool Whether this slide contains a photo large enough to lead the page. */
+    private bool $hasphoto = false;
 
     /**
      * Constructor.
@@ -87,6 +102,9 @@ class slide {
         }
 
         $blocks = [];
+        $this->vectors = [];
+        $this->vectortextblocks = [];
+        $this->hasphoto = false;
         $this->collect($tree, $xpath, $blocks);
 
         // The title placeholder becomes the page title and leaves the body.
@@ -100,10 +118,111 @@ class slide {
             }
         }
 
+        $body = $this->apply_diagram($body);
+
         $result->title = $title;
         $result->blocks = $body;
         $result->section = $this->detect_section($doc, $xpath);
         return $result;
+    }
+
+    /**
+     * When the collected vector shapes form a diagram, replaces their flattened
+     * text blocks with a single reconstructed SVG figure; otherwise leaves the
+     * body untouched so ordinary slides behave exactly as before.
+     *
+     * @param block[] $body The body blocks in collection order.
+     * @return block[] The body blocks, possibly with a diagram figure spliced in.
+     */
+    private function apply_diagram(array $body): array {
+        $this->vectors = array_values(array_filter($this->vectors, [self::class, 'is_visible_shape']));
+        if (!$this->qualifies_as_diagram()) {
+            return $body;
+        }
+        $svg = svg_builder::build($this->vectors);
+        if ($svg === '') {
+            return $body;
+        }
+
+        // Drop the text blocks that duplicate the diagram shapes' labels, then
+        // place the figure where the top-left shape sat so it flows in order.
+        $drop = [];
+        foreach ($this->vectortextblocks as $b) {
+            $drop[spl_object_id($b)] = true;
+        }
+        $kept = [];
+        foreach ($body as $b) {
+            if (!isset($drop[spl_object_id($b)])) {
+                $kept[] = $b;
+            }
+        }
+        $top = $this->vectors[0];
+        foreach ($this->vectors as $v) {
+            if ($v->y < $top->y || ($v->y === $top->y && $v->x < $top->x)) {
+                $top = $v;
+            }
+        }
+        $kept[] = new block(block::TYPE_HTML, $top->y, $top->x, $svg);
+        return $kept;
+    }
+
+    /**
+     * Whether the collected vector shapes look like an intentional, labelled
+     * diagram — two or more captioned boxes.
+     *
+     * Requiring captioned boxes is deliberately strict: unlabelled arrows, lines,
+     * circles and rotated outlines are almost always annotations drawn over a
+     * photo, and reconstructing those without the photo produces noise. A genuine
+     * process/flow diagram (the case this feature targets) labels its boxes.
+     *
+     * @return bool True if a diagram figure should be reconstructed.
+     */
+    private function qualifies_as_diagram(): bool {
+        // A photo-led slide keeps its editable text and image; stray annotation
+        // shapes on it are not promoted into a diagram figure.
+        if ($this->hasphoto) {
+            return false;
+        }
+        $captioned = 0;
+        foreach ($this->vectors as $v) {
+            if ($v->kind !== shape::KIND_ARROW && $v->kind !== shape::KIND_LINE && trim($v->text) !== '') {
+                $captioned++;
+            }
+        }
+        return $captioned >= 2;
+    }
+
+    /**
+     * Whether a shape would be visible on a white page: arrows and connectors
+     * always are; a text-free box that is white (or unfilled) with no contrasting
+     * outline is invisible clutter and is dropped from the diagram.
+     *
+     * @param shape $s The shape to test.
+     * @return bool True if the shape should be drawn.
+     */
+    private static function is_visible_shape(shape $s): bool {
+        if ($s->kind === shape::KIND_ARROW || $s->kind === shape::KIND_LINE) {
+            return true;
+        }
+        if (trim($s->text) !== '') {
+            return true;
+        }
+        $white = static function (?string $c): bool {
+            return $c === null || strtoupper($c) === '#FFFFFF';
+        };
+        return !($white($s->fill) && $white($s->line));
+    }
+
+    /**
+     * Returns (and lazily builds) the scheme-colour resolver for this slide.
+     *
+     * @return theme The colour resolver.
+     */
+    private function theme(): theme {
+        if ($this->theme === null) {
+            $this->theme = new theme($this->package, $this->path);
+        }
+        return $this->theme;
     }
 
     /**
@@ -136,6 +255,9 @@ class slide {
                         [$y, $x] = $this->offset($ch, $xpath, $tf);
                         $out[] = new block(block::TYPE_HTML, $y, $x, $html);
                     }
+                    break;
+                case 'cxnSp':
+                    $this->collect_connector($ch, $xpath, $tf);
                     break;
                 case 'grpSp':
                     // Children are positioned in the group's coordinate space; carry
@@ -210,6 +332,34 @@ class slide {
         }
         [$y, $x] = $this->offset($pic, $xpath, $tf);
         $out[] = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
+        $this->note_photo($pic, $xpath, $tf);
+    }
+
+    /**
+     * Flags the slide as photo-dominated when a picture covers a meaningful area,
+     * so a stray annotation arrow or box on a photo slide does not turn the page
+     * into a reconstructed diagram. Small logos and icons do not count.
+     *
+     * @param \DOMElement $pic The p:pic element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @param array|null $tf Coordinate transform inherited from enclosing groups.
+     * @return void
+     */
+    private function note_photo(\DOMElement $pic, \DOMXPath $xpath, ?array $tf): void {
+        $ext = $xpath->query('.//a:ext', $pic)->item(0);
+        if (!$ext instanceof \DOMElement) {
+            return;
+        }
+        $cx = (int) $ext->getAttribute('cx');
+        $cy = (int) $ext->getAttribute('cy');
+        if ($tf !== null) {
+            $cx = (int) round($cx * $tf['sx']);
+            $cy = (int) round($cy * $tf['sy']);
+        }
+        $slidearea = $this->package->slide_width() * $this->package->slide_height();
+        if ($slidearea > 0 && ($cx * $cy) >= $slidearea * self::PHOTO_AREA_FRACTION) {
+            $this->hasphoto = true;
+        }
     }
 
     /**
@@ -242,12 +392,26 @@ class slide {
         }
         $paras = $this->paragraphs($sp, $xpath);
         if (empty($paras)) {
+            // A drawn but text-free shape (an arrow, a plain box) is only useful as
+            // part of a reconstructed diagram; keep it as a vector, never as text.
+            $this->collect_vector($sp, $xpath, $tf, '');
             return;
         }
-        // Drop a lone, very short label (e.g. a corner "A-T" badge): furniture, not content.
-        if (count($paras) === 1 && \core_text::strlen(trim(strip_tags($paras[0]['text']))) <= self::BADGE_MAX_CHARS) {
+
+        // A filled or outlined shape carrying this text may be a diagram node. Record
+        // it as a vector (with its label, however short) before the badge heuristic,
+        // so short captions such as "Yes"/"No" are not discarded from a diagram.
+        $isvector = $this->collect_vector($sp, $xpath, $tf, $this->plain_lines($paras));
+
+        // Drop a lone, very short label on a plain text shape (e.g. a corner "A-T"
+        // badge): furniture, not content. Drawn diagram nodes are exempt.
+        if (
+            !$isvector && count($paras) === 1
+                && \core_text::strlen(trim(strip_tags($paras[0]['text']))) <= self::BADGE_MAX_CHARS
+        ) {
             return;
         }
+
         $block = new block(block::TYPE_TEXT, $y, $x, array_column($paras, 'text'));
         $block->levels = array_column($paras, 'level');
         // Whether each paragraph suppresses its bullet is kept per paragraph, so a
@@ -255,6 +419,32 @@ class slide {
         // prose and only the bulleted paragraphs as a list.
         $block->nobullets = array_column($paras, 'nobullet');
         $out[] = $block;
+
+        // When the shape is a diagram node, this text block mirrors its label and is
+        // dropped in favour of the reconstructed figure if the slide is a diagram.
+        if ($isvector) {
+            $this->vectortextblocks[] = $block;
+        }
+    }
+
+    /**
+     * Parses a shape as a vector diagram primitive and records it, when the shape
+     * is a drawn box, ellipse or block arrow (not a placeholder or plain text box).
+     *
+     * @param \DOMElement $sp The p:sp element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @param array|null $tf Coordinate transform inherited from enclosing groups.
+     * @param string $text The shape's plain, newline-separated label text.
+     * @return bool True if the shape was recorded as a vector.
+     */
+    private function collect_vector(\DOMElement $sp, \DOMXPath $xpath, ?array $tf, string $text): bool {
+        $shape = $this->vector_candidate($sp, $xpath, $tf);
+        if ($shape === null) {
+            return false;
+        }
+        $shape->text = $text;
+        $this->vectors[] = $shape;
+        return true;
     }
 
     /**
@@ -277,6 +467,257 @@ class slide {
             return;
         }
         $out[] = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
+        // A large picture stored as a shape fill (rather than a <p:pic>) still
+        // makes the slide photo-led, which suppresses diagram reconstruction.
+        $this->note_photo($sp, $xpath, null);
+    }
+
+    /**
+     * Collects a straight connector (line) as a vector diagram primitive.
+     *
+     * @param \DOMElement $cxn The p:cxnSp element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @param array|null $tf Coordinate transform inherited from enclosing groups.
+     * @return void
+     */
+    private function collect_connector(\DOMElement $cxn, \DOMXPath $xpath, ?array $tf = null): void {
+        $geom = $this->geom_with_tf($cxn, $xpath, $tf);
+        if ($geom === null) {
+            return;
+        }
+        // A connector explicitly set to no line is an invisible layout/alignment
+        // guide in PowerPoint; do not draw it into the reconstructed diagram.
+        if ($xpath->query('./p:spPr/a:ln/a:noFill', $cxn)->item(0) instanceof \DOMElement) {
+            return;
+        }
+        [$x, $y, $cx, $cy] = $geom;
+        $shape = new shape(shape::KIND_LINE, $x, $y, $cx, $cy);
+        [$shape->line, $shape->linewidth] = $this->resolve_line($cxn, $xpath);
+        if ($shape->line === null) {
+            $shape->line = '#000000';
+        }
+        $xfrm = $xpath->query('./p:spPr/a:xfrm', $cxn)->item(0);
+        if ($xfrm instanceof \DOMElement) {
+            $shape->fliph = $xfrm->getAttribute('flipH') === '1';
+            $shape->flipv = $xfrm->getAttribute('flipV') === '1';
+        }
+        $this->vectors[] = $shape;
+    }
+
+    /**
+     * Parses a shape into a {@see shape} value object when it is a drawn diagram
+     * primitive: a block arrow, or a filled/outlined box or ellipse. Placeholders,
+     * plain (unfilled) text boxes, full-slide backgrounds and the section panel
+     * are rejected so only genuine diagram parts are reconstructed.
+     *
+     * @param \DOMElement $sp The p:sp element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @param array|null $tf Coordinate transform inherited from enclosing groups.
+     * @return shape|null The parsed shape, or null if it is not a diagram primitive.
+     */
+    private function vector_candidate(\DOMElement $sp, \DOMXPath $xpath, ?array $tf): ?shape {
+        if ($xpath->query('.//p:nvSpPr/p:nvPr/p:ph', $sp)->item(0) instanceof \DOMElement) {
+            return null;
+        }
+        // Accept preset geometry, and custom geometry as a bounding-box rectangle
+        // (freeform and edited shapes) so a labelled node is not silently dropped.
+        $prstel = $xpath->query('./p:spPr/a:prstGeom', $sp)->item(0);
+        $custgeom = $xpath->query('./p:spPr/a:custGeom', $sp)->item(0);
+        if (!$prstel instanceof \DOMElement && !$custgeom instanceof \DOMElement) {
+            return null;
+        }
+        $geom = $this->geom_with_tf($sp, $xpath, $tf);
+        if ($geom === null) {
+            return null;
+        }
+        [$x, $y, $cx, $cy] = $geom;
+        if ($cx <= 0 || $cy <= 0) {
+            return null;
+        }
+        // A near-full-slide rectangle is a background, and a tall left-edge plate is
+        // the section panel handled elsewhere; neither is a diagram part.
+        if (
+            $cx >= (int) ($this->package->slide_width() * 0.85)
+                && $cy >= (int) ($this->package->slide_height() * 0.85)
+        ) {
+            return null;
+        }
+        if ($x <= self::PANEL_MAX_X_EMU && $cy >= self::PANEL_MIN_H_EMU) {
+            return null;
+        }
+
+        $prst = $prstel instanceof \DOMElement ? $prstel->getAttribute('prst') : 'rect';
+        [$kind, $arrow] = $this->classify_geometry($prst);
+
+        $fill = $this->resolve_fill($sp, $xpath);
+        [$line, $linewidth] = $this->resolve_line($sp, $xpath);
+        $styled = $xpath->query('./p:style', $sp)->item(0) instanceof \DOMElement;
+        // A plain rectangle with no fill, outline or shape style is a text box, not
+        // a diagram node; leave it to the text path. Arrows always count.
+        if ($kind !== shape::KIND_ARROW && $fill === null && $line === null && !$styled) {
+            return null;
+        }
+
+        $shape = new shape($kind, $x, $y, $cx, $cy);
+        $shape->arrow = $arrow;
+        $shape->fill = $fill;
+        $shape->line = $line;
+        $shape->linewidth = $linewidth;
+        $xfrm = $xpath->query('./p:spPr/a:xfrm', $sp)->item(0);
+        if ($xfrm instanceof \DOMElement) {
+            $rot = (int) $xfrm->getAttribute('rot');
+            $shape->rotation = (($rot / 60000) % 360 + 360) % 360;
+            $shape->fliph = $xfrm->getAttribute('flipH') === '1';
+            $shape->flipv = $xfrm->getAttribute('flipV') === '1';
+        }
+        return $shape;
+    }
+
+    /**
+     * Maps a DrawingML preset-geometry name to a shape kind and arrow direction.
+     *
+     * @param string $prst The prstGeom preset name (e.g. "roundRect", "rightArrow").
+     * @return array A [kind, arrowdirection] pair.
+     */
+    private function classify_geometry(string $prst): array {
+        // Only the four single-direction block arrows carry a reliable direction.
+        // Multi-directional and bent arrows (leftRightArrow, bentArrow, uturnArrow …)
+        // are drawn as their bounding box rather than given a false rightward point.
+        if (preg_match('/^(right|left|up|down)Arrow$/', $prst, $m)) {
+            return [shape::KIND_ARROW, $m[1]];
+        }
+        if ($prst === 'ellipse' || $prst === 'oval') {
+            return [shape::KIND_ELLIPSE, 'right'];
+        }
+        if (stripos($prst, 'round') !== false || stripos($prst, 'snip') !== false || $prst === 'plaque') {
+            return [shape::KIND_ROUNDRECT, 'right'];
+        }
+        return [shape::KIND_RECT, 'right'];
+    }
+
+    /**
+     * Returns a shape's [x, y, cx, cy] geometry in EMU, applying any group
+     * transform, or null when the shape has no explicit transform.
+     *
+     * @param \DOMElement $el The shape or connector element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @param array|null $tf Coordinate transform inherited from enclosing groups.
+     * @return int[]|null The [x, y, cx, cy] geometry, or null.
+     */
+    private function geom_with_tf(\DOMElement $el, \DOMXPath $xpath, ?array $tf): ?array {
+        $off = $xpath->query('./p:spPr/a:xfrm/a:off', $el)->item(0);
+        $ext = $xpath->query('./p:spPr/a:xfrm/a:ext', $el)->item(0);
+        if (!$off instanceof \DOMElement || !$ext instanceof \DOMElement) {
+            return null;
+        }
+        $x = (int) $off->getAttribute('x');
+        $y = (int) $off->getAttribute('y');
+        $cx = (int) $ext->getAttribute('cx');
+        $cy = (int) $ext->getAttribute('cy');
+        if ($tf !== null) {
+            $x = (int) round($tf['ox'] + $x * $tf['sx']);
+            $y = (int) round($tf['oy'] + $y * $tf['sy']);
+            $cx = (int) round($cx * $tf['sx']);
+            $cy = (int) round($cy * $tf['sy']);
+        }
+        return [$x, $y, $cx, $cy];
+    }
+
+    /**
+     * Resolves a shape's fill colour from its direct fill or its shape style.
+     *
+     * @param \DOMElement $sp The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return string|null The #RRGGBB fill, or null for no fill.
+     */
+    private function resolve_fill(\DOMElement $sp, \DOMXPath $xpath): ?string {
+        if ($xpath->query('./p:spPr/a:noFill', $sp)->item(0) instanceof \DOMElement) {
+            return null;
+        }
+        $direct = $xpath->query('./p:spPr/a:solidFill/*', $sp)->item(0);
+        if ($direct instanceof \DOMElement) {
+            return $this->colour_of($direct);
+        }
+        $ref = $xpath->query('./p:style/a:fillRef', $sp)->item(0);
+        if ($ref instanceof \DOMElement && $ref->getAttribute('idx') !== '0') {
+            $clr = $xpath->query('a:srgbClr | a:schemeClr', $ref)->item(0);
+            if ($clr instanceof \DOMElement) {
+                return $this->colour_of($clr);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Resolves a shape or connector outline colour and width.
+     *
+     * @param \DOMElement $el The shape or connector element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return array A [#RRGGBB|null colour, int widthemu] pair.
+     */
+    private function resolve_line(\DOMElement $el, \DOMXPath $xpath): array {
+        $ln = $xpath->query('./p:spPr/a:ln', $el)->item(0);
+        if ($ln instanceof \DOMElement) {
+            if ($xpath->query('a:noFill', $ln)->item(0) instanceof \DOMElement) {
+                return [null, 0];
+            }
+            $width = (int) $ln->getAttribute('w');
+            $clr = $xpath->query('a:solidFill/*', $ln)->item(0);
+            if ($clr instanceof \DOMElement) {
+                return [$this->colour_of($clr), $width];
+            }
+        }
+        $ref = $xpath->query('./p:style/a:lnRef', $el)->item(0);
+        if ($ref instanceof \DOMElement && $ref->getAttribute('idx') !== '0') {
+            $clr = $xpath->query('a:srgbClr | a:schemeClr', $ref)->item(0);
+            if ($clr instanceof \DOMElement) {
+                return [$this->colour_of($clr), 0];
+            }
+        }
+        return [null, 0];
+    }
+
+    /**
+     * Resolves a colour element (srgbClr or schemeClr) to #RRGGBB.
+     *
+     * @param \DOMElement $clr The a:srgbClr or a:schemeClr element.
+     * @return string|null The #RRGGBB colour, or null if unresolved.
+     */
+    private function colour_of(\DOMElement $clr): ?string {
+        if ($clr->localName === 'srgbClr') {
+            $val = $clr->getAttribute('val');
+            return preg_match('/^[0-9A-Fa-f]{6}$/', $val) ? '#' . strtoupper($val) : null;
+        }
+        if ($clr->localName === 'schemeClr') {
+            return $this->theme()->colour($clr->getAttribute('val'));
+        }
+        return null;
+    }
+
+    /**
+     * Flattens parsed paragraphs to plain, newline-separated label text, marking
+     * bulleted lines with a leading bullet so a diagram box keeps its structure.
+     *
+     * @param array[] $paras Entries of ['text'=>string, 'level'=>int, 'nobullet'=>bool].
+     * @return string The plain-text label.
+     */
+    private function plain_lines(array $paras): string {
+        $lines = [];
+        $multiple = count($paras) > 1;
+        foreach ($paras as $p) {
+            $text = html_entity_decode(strip_tags(str_replace("\n", ' ', $p['text'])), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $text = trim($text);
+            if ($text === '') {
+                continue;
+            }
+            if ($multiple && empty($p['nobullet']) && (int) ($p['level'] ?? 0) >= 0 && count($paras) > 1) {
+                $indent = str_repeat('   ', max(0, (int) ($p['level'] ?? 0)));
+                $lines[] = $indent . '• ' . $text;
+            } else {
+                $lines[] = $text;
+            }
+        }
+        return implode("\n", $lines);
     }
 
     /**

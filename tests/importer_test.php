@@ -485,6 +485,157 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A labelled box-and-arrow diagram is reconstructed as an inline SVG figure,
+     * keeping the box colours, the arrow and each box's text.
+     */
+    public function test_diagram_reconstructed_from_labelled_boxes(): void {
+        $sptree = $this->diagram_box(10, 'B1', 500000, 2000000, 2600000, 1200000, '442980', 'Step One')
+            . $this->diagram_arrow(20, 3200000, 2200000, 800000, 600000)
+            . $this->diagram_box(11, 'B2', 4200000, 2000000, 2600000, 1200000, '1F4E79', 'Step Two');
+        $page = $this->build_slide($sptree);
+        $this->assertStringContainsString('local-lessonimportpptx-diagram', $page->html);
+        $this->assertStringContainsString('<svg', $page->html);
+        $this->assertStringContainsString('<polygon', $page->html);
+        $this->assertStringContainsString('fill="#442980"', $page->html);
+        $this->assertStringContainsString('fill="#1F4E79"', $page->html);
+        $this->assertStringContainsString('Step One', $page->html);
+        $this->assertStringContainsString('Step Two', $page->html);
+        // The labels live in the figure, not as separate paragraphs.
+        $this->assertStringNotContainsString('<p>Step One</p>', $page->html);
+    }
+
+    /**
+     * A single captioned box is not a diagram; it stays editable text.
+     */
+    public function test_single_box_is_not_a_diagram(): void {
+        // A long label avoids the short-line title promotion, so it stays in the body.
+        $label = 'This standalone callout box should remain ordinary editable paragraph text.';
+        $sptree = $this->diagram_box(10, 'B1', 500000, 2000000, 2600000, 1200000, '442980', $label);
+        $page = $this->build_slide($sptree);
+        $this->assertStringNotContainsString('<svg', $page->html);
+        $this->assertStringContainsString('<p>' . $label . '</p>', $page->html);
+    }
+
+    /**
+     * Unlabelled shapes (arrows, empty outlines) are treated as annotations and
+     * are not reconstructed into a diagram.
+     */
+    public function test_unlabelled_shapes_are_not_reconstructed(): void {
+        $sptree = $this->diagram_arrow(20, 3200000, 2200000, 800000, 600000)
+            . $this->diagram_arrow(21, 5200000, 2200000, 800000, 600000)
+            . '<p:sp><p:nvSpPr><p:cNvPr id="22" name="O"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="1000000" y="1000000"/><a:ext cx="900000" cy="900000"/></a:xfrm>'
+            . '<a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>'
+            . '<a:ln><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></p:spPr>'
+            . '<p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>';
+        $page = $this->build_slide($sptree);
+        $this->assertStringNotContainsString('<svg', $page->html);
+    }
+
+    /**
+     * A slide led by a large photo keeps its image and editable text; captioned
+     * boxes on it are not promoted into a diagram figure.
+     */
+    public function test_photo_slide_suppresses_diagram(): void {
+        $pic = '<p:pic><p:nvPicPr><p:cNvPr id="5" name="P"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
+            . '<p:blipFill><a:blip r:embed="rId5"/></p:blipFill>'
+            . '<p:spPr><a:xfrm><a:off x="400000" y="400000"/><a:ext cx="6000000" cy="4000000"/></a:xfrm>'
+            . '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>';
+        $sptree = $pic
+            . $this->diagram_box(10, 'B1', 7000000, 1000000, 2000000, 900000, '442980', 'Alpha')
+            . $this->diagram_box(11, 'B2', 7000000, 2200000, 2000000, 900000, '1F4E79', 'Beta');
+        $page = $this->build_slide(
+            $sptree,
+            ['rId5' => '../media/image1.png'],
+            ['ppt/media/image1.png' => 'PNGDATA']
+        );
+        $this->assertStringNotContainsString('<svg', $page->html);
+        $this->assertStringContainsString('@@PLUGINFILE@@/image1.png', $page->html);
+        $this->assertStringContainsString('<p>Alpha</p>', $page->html);
+    }
+
+    /**
+     * A shape whose fill is a theme scheme colour resolves to the Office default
+     * palette when the deck carries no theme part.
+     */
+    public function test_scheme_colour_fill_resolves_to_default(): void {
+        $box1 = '<p:sp><p:nvSpPr><p:cNvPr id="10" name="B1"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="500000" y="2000000"/><a:ext cx="2600000" cy="1200000"/></a:xfrm>'
+            . '<a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>'
+            . '<a:solidFill><a:schemeClr val="accent1"/></a:solidFill></p:spPr>'
+            . '<p:txBody><a:bodyPr/><a:p><a:r><a:t>Node A</a:t></a:r></a:p></p:txBody></p:sp>';
+        $sptree = $box1
+            . $this->diagram_box(11, 'B2', 4200000, 2000000, 2600000, 1200000, '1F4E79', 'Node B');
+        $page = $this->build_slide($sptree);
+        // The accent1 slot resolves to #4472C4 in the Office default scheme.
+        $this->assertStringContainsString('fill="#4472C4"', $page->html);
+    }
+
+    /**
+     * A diagram label containing markup is escaped, not injected, into the SVG.
+     */
+    public function test_diagram_label_is_escaped(): void {
+        $evil = htmlspecialchars('</tspan><script>alert(1)</script>', ENT_XML1);
+        $sptree = $this->diagram_box(10, 'B1', 500000, 2000000, 2600000, 1200000, '442980', $evil)
+            . $this->diagram_box(11, 'B2', 4200000, 2000000, 2600000, 1200000, '1F4E79', 'Node B');
+        $page = $this->build_slide($sptree);
+        $this->assertStringContainsString('<svg', $page->html);
+        $this->assertStringNotContainsString('<script>', $page->html);
+        $this->assertStringContainsString('&lt;script&gt;', $page->html);
+    }
+
+    /**
+     * Short decision-node labels (Yes/No) still form and populate a diagram.
+     */
+    public function test_short_label_boxes_reconstruct(): void {
+        $sptree = $this->diagram_box(10, 'B1', 500000, 2000000, 1500000, 900000, '6EA9DB', 'Yes')
+            . $this->diagram_box(11, 'B2', 4200000, 2000000, 1500000, 900000, '6EA9DB', 'No');
+        $page = $this->build_slide($sptree);
+        $this->assertStringContainsString('<svg', $page->html);
+        $this->assertStringContainsString('Yes', $page->html);
+        $this->assertStringContainsString('No', $page->html);
+    }
+
+    /**
+     * Builds a filled, captioned round-rectangle shape for diagram tests.
+     *
+     * @param int $id The shape id.
+     * @param string $name The shape name.
+     * @param int $x Left offset in EMU.
+     * @param int $y Top offset in EMU.
+     * @param int $cx Width in EMU.
+     * @param int $cy Height in EMU.
+     * @param string $fill Six-hex-digit fill colour (no hash).
+     * @param string $text The box label.
+     * @return string The p:sp XML.
+     */
+    private function diagram_box(int $id, string $name, int $x, int $y, int $cx, int $cy, string $fill, string $text): string {
+        return '<p:sp><p:nvSpPr><p:cNvPr id="' . $id . '" name="' . $name . '"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="' . $x . '" y="' . $y . '"/><a:ext cx="' . $cx . '" cy="' . $cy . '"/></a:xfrm>'
+            . '<a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>'
+            . '<a:solidFill><a:srgbClr val="' . $fill . '"/></a:solidFill></p:spPr>'
+            . '<p:txBody><a:bodyPr/><a:p><a:r><a:t>' . $text . '</a:t></a:r></a:p></p:txBody></p:sp>';
+    }
+
+    /**
+     * Builds a right-pointing block-arrow shape for diagram tests.
+     *
+     * @param int $id The shape id.
+     * @param int $x Left offset in EMU.
+     * @param int $y Top offset in EMU.
+     * @param int $cx Width in EMU.
+     * @param int $cy Height in EMU.
+     * @return string The p:sp XML.
+     */
+    private function diagram_arrow(int $id, int $x, int $y, int $cx, int $cy): string {
+        return '<p:sp><p:nvSpPr><p:cNvPr id="' . $id . '" name="Arrow"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="' . $x . '" y="' . $y . '"/><a:ext cx="' . $cx . '" cy="' . $cy . '"/></a:xfrm>'
+            . '<a:prstGeom prst="rightArrow"><a:avLst/></a:prstGeom>'
+            . '<a:solidFill><a:srgbClr val="FF772E"/></a:solidFill></p:spPr>'
+            . '<p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>';
+    }
+
+    /**
      * Builds a one-slide deck whose slide shape tree is the given XML, then parses
      * and builds that slide into a page object (no database needed).
      *
