@@ -157,6 +157,37 @@ if ($data = $mform->get_data()) {
     exit;
 }
 
+// When both backends are available the form offers the editable/images choice
+// and also accepts PDFs. A PDF always imports as page images, so the choice
+// does not apply to it: hide that row while a PDF is selected and show it again
+// when a PowerPoint is chosen, so the visible option always matches what runs.
+if ($pdfenabled && $officeenabled) {
+    $js = <<<'JS'
+require([], function() {
+    var group = document.getElementById('fitem_id_importmode');
+    var picker = document.getElementById('fitem_id_pptxfile');
+    if (!group || !picker) {
+        return;
+    }
+    var sync = function() {
+        var el = picker.querySelector('.filepicker-filename');
+        var name = (el ? el.textContent : '').trim().toLowerCase();
+        var ispdf = name.length >= 4 && name.slice(-4) === '.pdf';
+        group.style.display = ispdf ? 'none' : '';
+    };
+    sync();
+    if (window.MutationObserver) {
+        new MutationObserver(sync).observe(picker, {
+            subtree: true,
+            childList: true,
+            characterData: true
+        });
+    }
+});
+JS;
+    $PAGE->requires->js_amd_inline($js);
+}
+
 echo $OUTPUT->header();
 echo $OUTPUT->heading(get_string('importpptx', 'local_lessonimportpptx'));
 $mform->display();
