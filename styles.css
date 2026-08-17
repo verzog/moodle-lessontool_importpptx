@@ -1,0 +1,60 @@
+/* Styles for local_lessonimportpptx generated pages.
+ *
+ * Kept intentionally small: layout relies on Moodle's bundled Bootstrap grid
+ * classes. The only bespoke rules are for the section-divider hero plate and a
+ * light caption treatment for image grids.
+ */
+
+.local-lessonimportpptx-section {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: stretch;
+    margin-bottom: 1rem;
+}
+
+.local-lessonimportpptx-plate {
+    flex: 0 0 auto;
+    min-width: 8rem;
+    max-width: 14rem;
+    padding: 1.5rem 1rem;
+    color: #fff;
+    border-radius: 0.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.local-lessonimportpptx-lede {
+    flex: 1 1 16rem;
+    min-width: 12rem;
+}
+
+.local-lessonimportpptx-grid .local-lessonimportpptx-cap {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    text-align: center;
+}
+
+.local-lessonimportpptx-grid img,
+.local-lessonimportpptx-cols img {
+    max-width: 100%;
+    height: auto;
+}
+
+/* A lone image is centred and height-capped so it does not dominate the page. */
+.local-lessonimportpptx-figure {
+    text-align: center;
+    margin: 0 0 1rem;
+}
+
+.local-lessonimportpptx-figure img {
+    max-width: 100%;
+    width: auto;
+    max-height: 70vh;
+}

@@ -1,0 +1,57 @@
+<?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+/**
+ * Strings for component local_lessonimportpptx.
+ *
+ * @package    local_lessonimportpptx
+ * @copyright  2026 Vernon Spain
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+defined('MOODLE_INTERNAL') || die();
+
+$string['asyncqueued'] = 'This upload will create {$a} pages, so it is being imported in the background. The pages will appear in this lesson shortly.';
+$string['confirmimport'] = 'Import PowerPoint';
+$string['confirmimportdetail'] = 'Create {$a} content pages in this lesson from the uploaded file? Existing pages will be kept and the new pages added after them.';
+$string['continuebutton'] = 'Continue';
+$string['errornopptx'] = 'The uploaded file is not a valid PowerPoint (.pptx) presentation.';
+$string['errornoslides'] = 'No slides could be found in the uploaded presentation.';
+$string['errorpdfrender'] = 'The PDF could not be converted to images. Please check the server\'s PDF tools (poppler).';
+$string['errorpdfunavailable'] = 'PDF import is not available on this site because the required PDF tools (poppler) were not found.';
+$string['errorstrictooxml'] = 'This presentation was saved as "Strict Open XML". Please re-save it as a standard PowerPoint (.pptx) presentation and try again.';
+$string['errortoolarge'] = 'The presentation contains a part that is too large to process safely.';
+$string['errortoomanypages'] = 'The PDF contains too many pages to import ({$a->count}; the limit is {$a->max}).';
+$string['errortoomanyslides'] = 'The presentation contains too many slides to import ({$a->count}; the limit is {$a->max}).';
+$string['file'] = 'PowerPoint presentation';
+$string['file_help'] = 'Upload a PowerPoint presentation in .pptx format. Each slide becomes one content page in the lesson, with its text, lists, tables and images converted to editable HTML and a Continue button that leads to the next page.';
+$string['filewithpdf'] = 'PowerPoint or PDF file';
+$string['filewithpdf_help'] = 'Upload a PowerPoint (.pptx) presentation or a PDF. Each PowerPoint slide becomes one editable content page. Each PDF page becomes one content page containing an image of the page.';
+$string['import'] = 'Import';
+$string['importpptx'] = 'Import PowerPoint';
+$string['importresult'] = 'Imported {$a} pages from the presentation.';
+$string['lessonimportpptx:import'] = 'Import PowerPoint presentations into a lesson';
+$string['optionimagemaxdim'] = 'Maximum image dimension (px)';
+$string['optionimagemaxdim_help'] = 'Images larger than this on their longest edge are down-scaled on import to keep the lesson lean. Enter 0 to keep the original images unchanged.';
+$string['optionsectioncolour'] = 'Section panel colour';
+$string['optionsectioncolour_help'] = 'Fallback colour (for example #442980) for the coloured plate on section-divider pages. The importer uses the colour detected on the slide when it can; this value is used only when no fill can be read.';
+$string['pagetitle'] = 'Page {$a}';
+$string['pluginname'] = 'PowerPoint import for Lesson';
+$string['privacy:metadata'] = 'The PowerPoint import tool does not store any personal data. It creates lesson pages and files, which are stored and managed by the Lesson activity.';
+$string['sectiondefault'] = 'Section';
+$string['slidetitle'] = 'Slide {$a}';
+$string['taskimport'] = 'Import a PowerPoint presentation into a lesson';
+$string['taskinprogress'] = 'A PowerPoint import is already queued for this lesson. Please wait for it to finish before importing again.';
