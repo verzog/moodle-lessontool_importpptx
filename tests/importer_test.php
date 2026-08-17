@@ -567,8 +567,33 @@ final class importer_test extends \advanced_testcase {
         $sptree = $box1
             . $this->diagram_box(11, 'B2', 4200000, 2000000, 2600000, 1200000, '1F4E79', 'Node B');
         $page = $this->build_slide($sptree);
-        // accent1 in the Office default scheme is #4472C4.
+        // The accent1 slot resolves to #4472C4 in the Office default scheme.
         $this->assertStringContainsString('fill="#4472C4"', $page->html);
+    }
+
+    /**
+     * A diagram label containing markup is escaped, not injected, into the SVG.
+     */
+    public function test_diagram_label_is_escaped(): void {
+        $evil = htmlspecialchars('</tspan><script>alert(1)</script>', ENT_XML1);
+        $sptree = $this->diagram_box(10, 'B1', 500000, 2000000, 2600000, 1200000, '442980', $evil)
+            . $this->diagram_box(11, 'B2', 4200000, 2000000, 2600000, 1200000, '1F4E79', 'Node B');
+        $page = $this->build_slide($sptree);
+        $this->assertStringContainsString('<svg', $page->html);
+        $this->assertStringNotContainsString('<script>', $page->html);
+        $this->assertStringContainsString('&lt;script&gt;', $page->html);
+    }
+
+    /**
+     * Short decision-node labels (Yes/No) still form and populate a diagram.
+     */
+    public function test_short_label_boxes_reconstruct(): void {
+        $sptree = $this->diagram_box(10, 'B1', 500000, 2000000, 1500000, 900000, '6EA9DB', 'Yes')
+            . $this->diagram_box(11, 'B2', 4200000, 2000000, 1500000, 900000, '6EA9DB', 'No');
+        $page = $this->build_slide($sptree);
+        $this->assertStringContainsString('<svg', $page->html);
+        $this->assertStringContainsString('Yes', $page->html);
+        $this->assertStringContainsString('No', $page->html);
     }
 
     /**

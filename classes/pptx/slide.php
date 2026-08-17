@@ -397,10 +397,19 @@ class slide {
             $this->collect_vector($sp, $xpath, $tf, '');
             return;
         }
-        // Drop a lone, very short label (e.g. a corner "A-T" badge): furniture, not content.
-        if (count($paras) === 1 && \core_text::strlen(trim(strip_tags($paras[0]['text']))) <= self::BADGE_MAX_CHARS) {
+
+        // A filled or outlined shape carrying this text may be a diagram node. Record
+        // it as a vector (with its label, however short) before the badge heuristic,
+        // so short captions such as "Yes"/"No" are not discarded from a diagram.
+        $isvector = $this->collect_vector($sp, $xpath, $tf, $this->plain_lines($paras));
+
+        // Drop a lone, very short label on a plain text shape (e.g. a corner "A-T"
+        // badge): furniture, not content. Drawn diagram nodes are exempt.
+        if (!$isvector && count($paras) === 1
+                && \core_text::strlen(trim(strip_tags($paras[0]['text']))) <= self::BADGE_MAX_CHARS) {
             return;
         }
+
         $block = new block(block::TYPE_TEXT, $y, $x, array_column($paras, 'text'));
         $block->levels = array_column($paras, 'level');
         // Whether each paragraph suppresses its bullet is kept per paragraph, so a
@@ -409,10 +418,9 @@ class slide {
         $block->nobullets = array_column($paras, 'nobullet');
         $out[] = $block;
 
-        // A filled or outlined shape carrying this text may also be a diagram node.
-        // Record it as a vector; if the slide turns out to be a diagram, this text
-        // block is dropped in favour of the reconstructed figure.
-        if ($this->collect_vector($sp, $xpath, $tf, $this->plain_lines($paras))) {
+        // When the shape is a diagram node, this text block mirrors its label and is
+        // dropped in favour of the reconstructed figure if the slide is a diagram.
+        if ($isvector) {
             $this->vectortextblocks[] = $block;
         }
     }
@@ -457,6 +465,9 @@ class slide {
             return;
         }
         $out[] = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
+        // A large picture stored as a shape fill (rather than a <p:pic>) still
+        // makes the slide photo-led, which suppresses diagram reconstruction.
+        $this->note_photo($sp, $xpath, null);
     }
 
     /**
@@ -470,6 +481,11 @@ class slide {
     private function collect_connector(\DOMElement $cxn, \DOMXPath $xpath, ?array $tf = null): void {
         $geom = $this->geom_with_tf($cxn, $xpath, $tf);
         if ($geom === null) {
+            return;
+        }
+        // A connector explicitly set to no line is an invisible layout/alignment
+        // guide in PowerPoint; do not draw it into the reconstructed diagram.
+        if ($xpath->query('./p:spPr/a:ln/a:noFill', $cxn)->item(0) instanceof \DOMElement) {
             return;
         }
         [$x, $y, $cx, $cy] = $geom;
@@ -501,8 +517,11 @@ class slide {
         if ($xpath->query('.//p:nvSpPr/p:nvPr/p:ph', $sp)->item(0) instanceof \DOMElement) {
             return null;
         }
+        // Accept preset geometry, and custom geometry as a bounding-box rectangle
+        // (freeform and edited shapes) so a labelled node is not silently dropped.
         $prstel = $xpath->query('./p:spPr/a:prstGeom', $sp)->item(0);
-        if (!$prstel instanceof \DOMElement) {
+        $custgeom = $xpath->query('./p:spPr/a:custGeom', $sp)->item(0);
+        if (!$prstel instanceof \DOMElement && !$custgeom instanceof \DOMElement) {
             return null;
         }
         $geom = $this->geom_with_tf($sp, $xpath, $tf);
@@ -515,15 +534,17 @@ class slide {
         }
         // A near-full-slide rectangle is a background, and a tall left-edge plate is
         // the section panel handled elsewhere; neither is a diagram part.
-        if ($cx >= (int) ($this->package->slide_width() * 0.85)
-                && $cy >= (int) ($this->package->slide_height() * 0.85)) {
+        if (
+            $cx >= (int) ($this->package->slide_width() * 0.85)
+                && $cy >= (int) ($this->package->slide_height() * 0.85)
+        ) {
             return null;
         }
         if ($x <= self::PANEL_MAX_X_EMU && $cy >= self::PANEL_MIN_H_EMU) {
             return null;
         }
 
-        $prst = $prstel->getAttribute('prst');
+        $prst = $prstel instanceof \DOMElement ? $prstel->getAttribute('prst') : 'rect';
         [$kind, $arrow] = $this->classify_geometry($prst);
 
         $fill = $this->resolve_fill($sp, $xpath);
@@ -557,11 +578,11 @@ class slide {
      * @return array A [kind, arrowdirection] pair.
      */
     private function classify_geometry(string $prst): array {
+        // Only the four single-direction block arrows carry a reliable direction.
+        // Multi-directional and bent arrows (leftRightArrow, bentArrow, uturnArrow …)
+        // are drawn as their bounding box rather than given a false rightward point.
         if (preg_match('/^(right|left|up|down)Arrow$/', $prst, $m)) {
             return [shape::KIND_ARROW, $m[1]];
-        }
-        if (stripos($prst, 'arrow') !== false || $prst === 'chevron' || $prst === 'homePlate') {
-            return [shape::KIND_ARROW, 'right'];
         }
         if ($prst === 'ellipse' || $prst === 'oval') {
             return [shape::KIND_ELLIPSE, 'right'];
@@ -757,6 +778,7 @@ class slide {
      */
     private function paragraphs(\DOMElement $sp, \DOMXPath $xpath): array {
         $out = [];
+        $liststyle = $this->list_style_bullets($sp, $xpath);
         foreach ($xpath->query('.//a:p', $sp) as $p) {
             $buf = '';
             foreach ($p->childNodes as $node) {
@@ -784,16 +806,73 @@ class slide {
             }
             $ppr = $xpath->query('a:pPr', $p)->item(0);
             $level = 0;
-            $nobullet = false;
+            $nobullet = null;
             if ($ppr instanceof \DOMElement) {
                 // DrawingML outlines allow levels 0-8; clamp so a crafted lvl (the
                 // uploaded XML is not schema-validated) cannot drive deep nesting.
                 $level = min(self::MAX_LIST_LEVEL, max(0, (int) $ppr->getAttribute('lvl')));
-                $nobullet = $xpath->query('a:buNone', $ppr)->item(0) instanceof \DOMElement;
+                $nobullet = self::bullet_state($ppr, $xpath);
+            }
+            if ($nobullet === null) {
+                // The paragraph itself is silent about bullets: fall back to the
+                // shape's own list style for this level. Styles inherited from the
+                // slide layout or master are not resolved; that unknown state reads
+                // as bulleted, matching PowerPoint's usual placeholder default.
+                $nobullet = $liststyle[$level] ?? false;
             }
             $out[] = ['text' => $line, 'level' => $level, 'nobullet' => $nobullet];
         }
         return $out;
+    }
+
+    /**
+     * Reads the bullet states declared by a shape's own txBody list style.
+     *
+     * @param \DOMElement $sp The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return array Map of indent level (0-8) to bool "bullet suppressed";
+     *               levels the style leaves undecided are absent.
+     */
+    private function list_style_bullets(\DOMElement $sp, \DOMXPath $xpath): array {
+        $states = [];
+        $lststyle = $xpath->query('./p:txBody/a:lstStyle', $sp)->item(0);
+        if (!$lststyle instanceof \DOMElement) {
+            return $states;
+        }
+        foreach ($lststyle->childNodes as $child) {
+            if (!$child instanceof \DOMElement || $child->namespaceURI !== package::NS_A) {
+                continue;
+            }
+            if (!preg_match('/^lvl([1-9])pPr$/', $child->localName, $m)) {
+                continue;
+            }
+            $state = self::bullet_state($child, $xpath);
+            if ($state !== null) {
+                $states[(int) $m[1] - 1] = $state;
+            }
+        }
+        return $states;
+    }
+
+    /**
+     * Reads the explicit bullet state carried by a paragraph-properties element.
+     *
+     * @param \DOMElement $props A paragraph-properties element (a:pPr or a:lvlNpPr).
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return bool|null True if bullets are switched off (a:buNone), false if a
+     *                   bullet is set (a:buChar / a:buAutoNum), null if unspecified.
+     */
+    private static function bullet_state(\DOMElement $props, \DOMXPath $xpath): ?bool {
+        if ($xpath->query('a:buNone', $props)->item(0) instanceof \DOMElement) {
+            return true;
+        }
+        if (
+            $xpath->query('a:buChar', $props)->item(0) instanceof \DOMElement
+                || $xpath->query('a:buAutoNum', $props)->item(0) instanceof \DOMElement
+        ) {
+            return false;
+        }
+        return null;
     }
 
     /**

@@ -69,12 +69,38 @@ class svg_builder {
             $body .= self::render_shape($s);
         }
 
+        // Screen readers see the figure as one image; name it from the box labels
+        // so the content the reconstruction absorbed is not lost to them.
+        $label = self::accessible_label($shapes);
+        $title = $label === '' ? '' : '<title>' . $label . '</title>';
+        $aria = $label === '' ? '' : ' aria-label="' . $label . '"';
+
         $viewbox = self::num($minx) . ' ' . self::num($miny) . ' ' . self::num($width) . ' ' . self::num($height);
         return '<div class="local-lessonimportpptx-figure local-lessonimportpptx-diagram">'
             . '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' . $viewbox . '" '
-            . 'role="img" preserveAspectRatio="xMidYMid meet" '
+            . 'role="img"' . $aria . ' preserveAspectRatio="xMidYMid meet" '
             . 'style="width:100%;height:auto;max-width:' . (int) round($width) . 'px;">'
-            . $body . '</svg></div>';
+            . $title . $body . '</svg></div>';
+    }
+
+    /**
+     * Builds an escaped accessible name for the diagram from its box labels.
+     *
+     * @param shape[] $shapes The shapes.
+     * @return string The escaped label text, or '' when there is none.
+     */
+    private static function accessible_label(array $shapes): string {
+        $parts = [];
+        foreach ($shapes as $s) {
+            $text = trim(preg_replace('/\s+/', ' ', str_replace("\n", ' ', $s->text)));
+            if ($text !== '') {
+                $parts[] = $text;
+            }
+        }
+        if (empty($parts)) {
+            return '';
+        }
+        return htmlspecialchars('Diagram: ' . implode('; ', $parts), ENT_QUOTES, 'UTF-8');
     }
 
     /**
@@ -313,22 +339,25 @@ class svg_builder {
         $tspans = '';
         foreach ($lines as $i => $line) {
             $ly = $start + $i * $lineheight;
-            $tspans .= '<tspan x="' . self::num($cx) . '" y="' . self::num($ly) . '">' . $line . '</tspan>';
+            // The label is plain text; escape it here, at the point it enters markup,
+            // so a caption containing "<", "&" or crafted tags cannot inject SVG/HTML.
+            $escaped = htmlspecialchars($line, ENT_QUOTES, 'UTF-8');
+            $tspans .= '<tspan x="' . self::num($cx) . '" y="' . self::num($ly) . '">' . $escaped . '</tspan>';
         }
         return '<text text-anchor="middle" font-family="sans-serif" '
             . 'font-size="' . self::num($font) . '" fill="' . $colour . '">' . $tspans . '</text>';
     }
 
     /**
-     * Wraps escaped text into lines that fit the given width.
+     * Wraps plain text into lines that fit the given width.
      *
      * Width is estimated from the font size (an average glyph is ~0.55 em), which
      * is enough to keep labels inside their box without a font metrics library.
      *
-     * @param string $text The escaped text (may contain "\n" hard breaks).
+     * @param string $text The plain, unescaped text (may contain "\n" hard breaks).
      * @param float $boxwidth The shape width in pixels.
      * @param float $font The font size in pixels.
-     * @return string[] The wrapped lines (escaped).
+     * @return string[] The wrapped lines (still plain, unescaped).
      */
     private static function wrap(string $text, float $boxwidth, float $font): array {
         $maxchars = max(1, (int) (($boxwidth * 0.92) / ($font * 0.55)));
@@ -338,7 +367,7 @@ class svg_builder {
             $current = '';
             foreach ($words as $word) {
                 $candidate = $current === '' ? $word : $current . ' ' . $word;
-                if (\core_text::strlen(html_entity_decode($candidate)) > $maxchars && $current !== '') {
+                if (\core_text::strlen($candidate) > $maxchars && $current !== '') {
                     $lines[] = $current;
                     $current = $word;
                 } else {
