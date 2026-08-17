@@ -63,20 +63,41 @@ function local_lessonimportpptx_process(
             'type' => local_lessonimportpptx_type($file),
             'imagemaxdim' => (int) ($options['imagemaxdim'] ?? 1600),
             'sectioncolour' => (string) ($options['sectioncolour'] ?? '#442980'),
+            'importmode' => (string) ($options['importmode'] ?? 'editable'),
         ]);
         $task->set_userid($USER->id);
         \core\task\manager::queue_adhoc_task($task);
         return (object) ['queued' => true, 'count' => $count];
     }
 
-    if (local_lessonimportpptx_type($file) === 'pdf') {
-        $importer = new \local_lessonimportpptx\pdf_importer($lesson, $context, $options);
-    } else {
-        $importer = new \local_lessonimportpptx\importer($lesson, $context, $options);
-    }
+    $importer = local_lessonimportpptx_importer($file, $lesson, $context, $options);
     $created = $importer->import($file);
     \local_lessonimportpptx\pending_file::delete($context, $pendingid);
     return (object) ['queued' => false, 'count' => $created];
+}
+
+/**
+ * Chooses the importer for an upload, honouring the requested import mode.
+ *
+ * A PDF always imports as page images. A PowerPoint imports as editable content
+ * pages by default, or as one rendered image per slide when the "images" mode is
+ * requested and the LibreOffice render backend is available.
+ *
+ * @param stored_file $file The staged upload.
+ * @param stdClass $lesson The target lesson record.
+ * @param context_module $context The lesson's module context.
+ * @param array $options Import options (including 'importmode').
+ * @return object An importer exposing import(stored_file): int.
+ */
+function local_lessonimportpptx_importer(stored_file $file, stdClass $lesson, context_module $context, array $options) {
+    if (local_lessonimportpptx_type($file) === 'pdf') {
+        return new \local_lessonimportpptx\pdf_importer($lesson, $context, $options);
+    }
+    $mode = (string) ($options['importmode'] ?? 'editable');
+    if ($mode === 'images' && \local_lessonimportpptx\office\renderer::is_available()) {
+        return new \local_lessonimportpptx\office_importer($lesson, $context, $options);
+    }
+    return new \local_lessonimportpptx\importer($lesson, $context, $options);
 }
 
 /**

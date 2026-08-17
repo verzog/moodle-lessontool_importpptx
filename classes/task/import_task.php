@@ -24,10 +24,8 @@
 
 namespace local_lessonimportpptx\task;
 
-use local_lessonimportpptx\importer;
-
 /**
- * Runs {@see importer::import()} for presentations above the async threshold.
+ * Runs the chosen importer for presentations above the async threshold.
  */
 class import_task extends \core\task\adhoc_task {
     /**
@@ -45,7 +43,7 @@ class import_task extends \core\task\adhoc_task {
      * @return void
      */
     public function execute(): void {
-        global $DB;
+        global $DB, $CFG;
 
         $data = $this->get_custom_data();
         if (empty($data->cmid) || empty($data->fileitemid)) {
@@ -71,15 +69,13 @@ class import_task extends \core\task\adhoc_task {
         $options = [
             'imagemaxdim' => (int) ($data->imagemaxdim ?? 1600),
             'sectioncolour' => (string) ($data->sectioncolour ?? '#442980'),
+            'importmode' => (string) ($data->importmode ?? 'editable'),
         ];
 
         // Do not delete the staged upload in a finally: if the import throws on a
         // transient error, Moodle retries the adhoc task and needs the input intact.
-        if (($data->type ?? 'pptx') === 'pdf') {
-            $importer = new \local_lessonimportpptx\pdf_importer($lesson, $context, $options);
-        } else {
-            $importer = new importer($lesson, $context, $options);
-        }
+        require_once($CFG->dirroot . '/local/lessonimportpptx/locallib.php');
+        $importer = local_lessonimportpptx_importer($file, $lesson, $context, $options);
         $count = $importer->import($file);
         mtrace("local_lessonimportpptx: imported {$count} pages into lesson {$lesson->id}.");
         \local_lessonimportpptx\pending_file::delete($context, $itemid);

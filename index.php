@@ -62,7 +62,11 @@ if ($cancelpending) {
 }
 
 $pdfenabled = \local_lessonimportpptx\pdf\renderer::is_available();
-$mform = new \local_lessonimportpptx\form\import_form(null, ['id' => $cm->id, 'pdfenabled' => $pdfenabled]);
+$officeenabled = \local_lessonimportpptx\office\renderer::is_available();
+$mform = new \local_lessonimportpptx\form\import_form(
+    null,
+    ['id' => $cm->id, 'pdfenabled' => $pdfenabled, 'officeenabled' => $officeenabled]
+);
 if ($mform->is_cancelled()) {
     redirect($returnurl);
 }
@@ -82,6 +86,7 @@ if (optional_param('confirm', 0, PARAM_BOOL) && confirm_sesskey()) {
     $options = [
         'imagemaxdim' => optional_param('imagemaxdim', 1600, PARAM_INT),
         'sectioncolour' => optional_param('sectioncolour', '#442980', PARAM_TEXT),
+        'importmode' => optional_param('importmode', 'editable', PARAM_ALPHA),
     ];
     $result = local_lessonimportpptx_process($file, $lesson, $context, $cm, $pendingid, $options);
     if ($result->queued) {
@@ -136,6 +141,7 @@ if ($data = $mform->get_data()) {
         'pendingid' => $pendingid,
         'imagemaxdim' => (int) $data->imagemaxdim,
         'sectioncolour' => (string) $data->sectioncolour,
+        'importmode' => (string) ($data->importmode ?? 'editable'),
     ]);
     $cancelurl = new moodle_url($PAGE->url, ['id' => $cm->id, 'cancelpending' => $pendingid]);
     echo $OUTPUT->header();
