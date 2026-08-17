@@ -1,0 +1,165 @@
+name: Moodle plugin CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-progress run when a newer commit lands on the same ref; combined
+# with the push filter above (PRs already cover feature branches) this stops
+# every commit from launching two full matrices and stacking up the queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Australian timezone so date/time tests respect AEST/AWST offsets.
+    env:
+      TZ: Australia/Sydney
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready" --health-interval=10s
+          --health-timeout=5s --health-retries=3
+
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MYSQL_USER: root
+          MYSQL_ALLOW_EMPTY_PASSWORD: true
+          MYSQL_CHARACTER_SET_SERVER: utf8mb4
+          MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+        ports:
+          - 3306:3306
+        # Initialisation-aware check: passes only once InnoDB is ready on the TCP
+        # port, not while the entrypoint's temporary --skip-networking server runs.
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=5
+
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: true
+          MYSQL_CHARACTER_SET_SERVER: utf8mb4
+          MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+        # Mapped to host 3307 so it doesn't clash with the mariadb service on 3306.
+        ports:
+          - 3307:3306
+        # Force a TCP ping so the check fails while the entrypoint's temporary
+        # --skip-networking server is up, and only passes once the port is live.
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=5
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Moodle 5.0/5.1 run on PHP 8.2-8.4; Moodle 5.2 dropped 8.2 (8.3-8.4 only).
+        php: ['8.2', '8.3', '8.4']
+        moodle-branch: ['MOODLE_500_STABLE', 'MOODLE_501_STABLE', 'MOODLE_502_STABLE']
+        # mysqli -> MySQL 8.4 service (port 3307); mariadb -> MariaDB 10.11 (3306).
+        database: ['pgsql', 'mariadb', 'mysqli']
+        exclude:
+          # Moodle 5.2 requires PHP 8.3+, so skip the 8.2 combinations there.
+          - php: '8.2'
+            moodle-branch: 'MOODLE_502_STABLE'
+
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v4
+        with:
+          path: plugin
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: zip, xml, gd, mbstring, sodium, intl, soap, xmlrpc, pgsql, mysqli
+          # Moodle 5.2 requires max_input_vars of 7000 or higher.
+          ini-values: max_input_vars=7000
+          coverage: none
+
+      - name: Install poppler-utils (PDF backend)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - name: Initialise moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist \
+            moodlehq/moodle-plugin-ci ci ^4
+          echo "$(pwd)/ci/bin" >> "$GITHUB_PATH"
+          echo "$(pwd)/ci/vendor/bin" >> "$GITHUB_PATH"
+          sudo locale-gen en_AU.UTF-8
+          echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
+
+      - name: Install Moodle
+        run: |
+          case "${{ matrix.database }}" in
+            pgsql)   dbport=5432 ;;
+            mariadb) dbport=3306 ;;
+            mysqli)  dbport=3307 ;;
+          esac
+          moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1 --db-port="$dbport"
+        env:
+          DB: ${{ matrix.database }}
+          MOODLE_BRANCH: ${{ matrix.moodle-branch }}
+
+      - name: PHP Lint
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phplint
+
+      - name: PHP Copy/Paste Detector
+        continue-on-error: true
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpcpd
+
+      - name: PHP Mess Detector
+        continue-on-error: true
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpmd
+
+      - name: Moodle Code Checker
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpcs --max-warnings 0
+
+      - name: Moodle PHPDoc Checker
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpdoc --max-warnings 0
+
+      - name: Validating
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci validate
+
+      - name: Check upgrade savepoints
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci savepoints
+
+      - name: Mustache Lint
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci mustache
+
+      - name: Grunt
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci grunt --max-lint-warnings 0
+
+      - name: PHPUnit tests
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpunit --fail-on-warning
+
+      - name: Behat features
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci behat --profile chrome
