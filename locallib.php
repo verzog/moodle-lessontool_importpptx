@@ -65,6 +65,8 @@ function local_lessonimportpptx_process(
             'sectioncolour' => (string) ($options['sectioncolour'] ?? '#442980'),
             'importmode' => (string) ($options['importmode'] ?? 'editable'),
             'cardgroup' => (int) !empty($options['cardgroup']),
+            'bodysize' => (int) ($options['bodysize'] ?? 0),
+            'adjacentsize' => (int) ($options['adjacentsize'] ?? 0),
         ]);
         $task->set_userid($USER->id);
         \core\task\manager::queue_adhoc_task($task);
