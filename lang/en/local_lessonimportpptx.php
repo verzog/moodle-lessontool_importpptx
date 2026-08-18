@@ -25,6 +25,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $string['asyncqueued'] = 'This upload will create {$a} pages, so it is being imported in the background. The pages will appear in this lesson shortly.';
+$string['clicktoenlarge'] = 'Click to enlarge';
 $string['confirmimport'] = 'Import PowerPoint';
 $string['confirmimportdetail'] = 'Create {$a} content pages in this lesson from the uploaded file? Existing pages will be kept and the new pages added after them.';
 $string['continuebutton'] = 'Continue';
@@ -48,6 +49,8 @@ $string['importmodeimages'] = 'Faithful images (one image per slide)';
 $string['importpptx'] = 'Import PowerPoint';
 $string['importresult'] = 'Imported {$a} pages from the presentation.';
 $string['lessonimportpptx:import'] = 'Import PowerPoint presentations into a lesson';
+$string['optioncardgroup'] = 'Images as card group';
+$string['optioncardgroup_help'] = 'When importing as editable content, render each run of ordinary pictures as a Bootstrap card group — the same markup the tiny_bootstrap editor plugin inserts — instead of a plain image grid. Each picture becomes a card that opens a click-to-enlarge zoom, and a paired short caption becomes the card text. Reconstructed diagrams (SmartArt and shape flows) are unaffected. This option applies to the editable import only; it has no effect when importing as faithful images.';
 $string['optionimagemaxdim'] = 'Maximum image dimension (px)';
 $string['optionimagemaxdim_help'] = 'Images larger than this on their longest edge are down-scaled on import to keep the lesson lean. Enter 0 to keep the original images unchanged.';
 $string['optionimportmode'] = 'Import as';

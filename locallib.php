@@ -64,6 +64,7 @@ function local_lessonimportpptx_process(
             'imagemaxdim' => (int) ($options['imagemaxdim'] ?? 1600),
             'sectioncolour' => (string) ($options['sectioncolour'] ?? '#442980'),
             'importmode' => (string) ($options['importmode'] ?? 'editable'),
+            'cardgroup' => (int) !empty($options['cardgroup']),
         ]);
         $task->set_userid($USER->id);
         \core\task\manager::queue_adhoc_task($task);

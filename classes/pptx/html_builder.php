@@ -44,6 +44,12 @@ class html_builder {
     /** @var string Fallback plate colour when a slide's own fill cannot be read. */
     private string $defaultcolour;
 
+    /** @var bool Whether runs of plain (non-diagram) images become Bootstrap card groups. */
+    private bool $cardgroup;
+
+    /** @var int Running counter for unique card/modal DOM ids within a page. */
+    private int $carduid = 0;
+
     /** @var array Map of page filename => source media path in the package. */
     private array $images = [];
 
@@ -51,9 +57,13 @@ class html_builder {
      * Constructor.
      *
      * @param string $defaultcolour Fallback section-plate colour (e.g. "#442980").
+     * @param bool $cardgroup When true, plain image runs render as a Bootstrap
+     *                        card group (matching the tiny_bootstrap plugin)
+     *                        instead of a plain figure or image grid.
      */
-    public function __construct(string $defaultcolour) {
+    public function __construct(string $defaultcolour, bool $cardgroup = false) {
         $this->defaultcolour = self::safe_colour($defaultcolour, '#442980');
+        $this->cardgroup = $cardgroup;
     }
 
     /**
@@ -68,6 +78,7 @@ class html_builder {
      */
     public function build(\stdClass $parsed): \stdClass {
         $this->images = [];
+        $this->carduid = 0;
         if ($parsed->section !== null) {
             return $this->build_section($parsed);
         }
@@ -189,7 +200,9 @@ class html_builder {
             if ($caps !== null && $b + 1 < $count) {
                 $next = $this->image_refs($bands[$b + 1]);
                 if ($next !== null && count($next) === count($caps)) {
-                    $parts[] = $this->render_grid($next, $caps);
+                    $parts[] = $this->cardgroup
+                        ? $this->render_card_group($next, $caps)
+                        : $this->render_grid($next, $caps);
                     $b += 2;
                     continue;
                 }
@@ -203,9 +216,13 @@ class html_builder {
                     $imgs = array_merge($imgs, $more);
                     $b2++;
                 }
-                $parts[] = count($imgs) === 1
-                    ? $this->render_figure($imgs[0])
-                    : $this->render_grid($imgs, null);
+                if ($this->cardgroup) {
+                    $parts[] = $this->render_card_group($imgs, null);
+                } else {
+                    $parts[] = count($imgs) === 1
+                        ? $this->render_figure($imgs[0])
+                        : $this->render_grid($imgs, null);
+                }
                 $b = $b2;
                 continue;
             }
@@ -493,6 +510,84 @@ class html_builder {
                 . '<img src="' . $ref . '" alt="" class="img-fluid"></div>';
         }
         return '<div class="row g-3 local-lessonimportpptx-grid">' . $cells . '</div>';
+    }
+
+    /**
+     * Renders a run of images as a Bootstrap 5 card group, matching the markup
+     * of the tiny_bootstrap editor plugin: each image becomes a card with a
+     * click-to-enlarge zoom modal, and a paired short caption becomes the card
+     * text. An image with no caption is a card with just the picture.
+     *
+     * @param string[] $imgs Image @@PLUGINFILE@@ references.
+     * @param string[]|null $caps Captions aligned to $imgs (inline HTML), or null.
+     * @return string The card-group HTML (a row of cards followed by their modals).
+     */
+    private function render_card_group(array $imgs, ?array $caps): string {
+        // Column counts mirror tiny_bootstrap: pairs by default, three across for
+        // three cards, and four across (wrapping) for four or more.
+        $count = count($imgs);
+        $rowcols = 'row-cols-1 row-cols-md-2';
+        if ($count >= 4) {
+            $rowcols = 'row-cols-1 row-cols-sm-2 row-cols-lg-4';
+        } else if ($count === 3) {
+            $rowcols = 'row-cols-1 row-cols-md-3';
+        }
+        $enlarge = s(get_string('clicktoenlarge', 'local_lessonimportpptx'));
+        $cards = [];
+        $modals = [];
+        foreach ($imgs as $idx => $ref) {
+            $caption = ($caps !== null && isset($caps[$idx])) ? trim($caps[$idx]) : '';
+            $uid = 'lessonImportCard' . (++$this->carduid);
+            $body = $caption === ''
+                ? ''
+                : '<div class="card-body"><p class="card-text">' . $caption . '</p></div>';
+            $cards[] = '<div class="col local-lessonimportpptx-card">'
+                . '<div class="card h-100">'
+                . '<a href="#" class="tiny-bs-card-img-link" data-bs-toggle="modal" '
+                . 'data-bs-target="#' . $uid . '" title="' . $enlarge . '">'
+                . '<img src="' . $ref . '" class="card-img-top tiny-bs-card-img" '
+                . 'style="cursor:zoom-in;" alt="">'
+                . '</a>' . $body
+                . '</div></div>';
+            $modals[] = $this->render_card_modal($uid, $ref, $caption);
+        }
+        $row = '<div class="row ' . $rowcols . ' g-4 local-lessonimportpptx-cardgroup">'
+            . implode('', $cards) . '</div>';
+        return $row . "\n" . implode("\n", $modals);
+    }
+
+    /**
+     * Renders the click-to-enlarge zoom modal for one card image.
+     *
+     * The modal is a plain Bootstrap 5 modal with inline sizing so it works on a
+     * lesson page (where the editor plugin's own CSS is not loaded); the theme's
+     * bundled Bootstrap JavaScript drives the open/close behaviour.
+     *
+     * @param string $uid The modal's DOM id, shared with its trigger link.
+     * @param string $ref The image @@PLUGINFILE@@ reference.
+     * @param string $caption The caption inline HTML, or '' for none.
+     * @return string The modal HTML.
+     */
+    private function render_card_modal(string $uid, string $ref, string $caption): string {
+        $close = s(get_string('closebuttontitle'));
+        $arialabel = $caption === '' ? '' : ' aria-label="' . s(self::plain_text($caption)) . '"';
+        $cappara = $caption === ''
+            ? ''
+            : '<p class="mt-2 mb-0 text-muted">' . $caption . '</p>';
+        return '<div class="modal fade tiny-bootstrap-modal local-lessonimportpptx-cardmodal" id="'
+            . $uid . '" tabindex="-1"' . $arialabel . ' aria-hidden="true">'
+            . '<div class="modal-dialog modal-xl modal-dialog-centered">'
+            . '<div class="modal-content">'
+            . '<div class="modal-header py-2">'
+            . '<h4 class="modal-title"></h4>'
+            . '<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="'
+            . $close . '"></button>'
+            . '</div>'
+            . '<div class="modal-body p-2 text-center" '
+            . 'style="display:flex;flex-direction:column;align-items:center;justify-content:center;">'
+            . '<img src="' . $ref . '" alt="" style="width:100%;height:65vh;object-fit:contain;">'
+            . $cappara
+            . '</div></div></div></div>';
     }
 
     /**
