@@ -337,6 +337,27 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * Text overlaid on an image (a single cluster, stacked rather than columned)
+     * is body text, not beside-image, so it takes the body size not the adjacent.
+     */
+    public function test_overlaid_text_uses_body_size(): void {
+        $builder = new html_builder('#442980', false, 16, 20);
+        $image = new block(block::TYPE_IMAGE, 0, 0, 'ppt/media/bg.png');
+        $image->cy = 4000000;
+        $image->cx = 6000000;
+        $text = new block(block::TYPE_TEXT, 500000, 500000, ['<span style="font-size:28pt;">Overlaid caption text.</span>']);
+        $text->levels = [0];
+        $text->nobullets = [true];
+        $text->cy = 1000000;
+        $text->cx = 3000000;
+        $parsed = (object) ['title' => 'Page', 'section' => null, 'blocks' => [$image, $text]];
+        $out = $builder->build($parsed);
+        $this->assertStringNotContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringContainsString('font-size:16pt', $out->html);
+        $this->assertStringNotContainsString('font-size:20pt', $out->html);
+    }
+
+    /**
      * With the card-group option on, a captioned image row becomes a Bootstrap
      * card group: each picture is a card whose caption is the card text and whose
      * click-to-enlarge zoom modal shares the card's id.

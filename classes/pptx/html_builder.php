@@ -205,7 +205,13 @@ class html_builder {
             $band = $bands[$b];
 
             // A row of short lines directly above an equal row of images: captions.
+            // Captions are body text (not beside an image), so honour the body size.
             $caps = $this->caption_texts($band);
+            if ($caps !== null) {
+                $caps = array_map(function (string $c): string {
+                    return $this->sized($c, $this->bodysize);
+                }, $caps);
+            }
             if ($caps !== null && $b + 1 < $count) {
                 $next = $this->image_refs($bands[$b + 1]);
                 if ($next !== null && count($next) === count($caps)) {
@@ -412,13 +418,15 @@ class html_builder {
      * @return string The row HTML.
      */
     private function render_columns(array $band): string {
-        // Text sharing a row with an image is the "image-adjacent" category; a row
-        // of only text is ordinary body text. Each gets its own size override.
-        $textsize = $this->band_has_image($band) ? $this->adjacentsize : $this->bodysize;
         $columns = $this->cluster_by_x($band);
+        $columned = count($columns) >= 2 && count($columns) <= 4;
+        // Text counts as "beside an image" only when the row genuinely splits into
+        // columns that include an image. Text overlaid on or stacked with an image
+        // (a single cluster) is body text, not adjacent, so it takes the body size.
+        $textsize = ($columned && $this->band_has_image($band)) ? $this->adjacentsize : $this->bodysize;
         // One horizontal group, or too many to sit side by side cleanly: just
         // stack in reading order (top-to-bottom).
-        if (count($columns) < 2 || count($columns) > 4) {
+        if (!$columned) {
             $stack = '';
             foreach ($this->sort_by_y($band) as $b) {
                 $stack .= $this->render_block($b, $textsize);
@@ -490,6 +498,7 @@ class html_builder {
      * Renders a single block's inner HTML with no column or figure wrapper.
      *
      * @param block $b The block.
+     * @param int $textsize Point size to force on body text, or 0 to keep the slide's sizes.
      * @return string The inner HTML.
      */
     private function render_cell(block $b, int $textsize = 0): string {
