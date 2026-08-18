@@ -47,9 +47,6 @@ class html_builder {
     /** @var bool Whether runs of plain (non-diagram) images become Bootstrap card groups. */
     private bool $cardgroup;
 
-    /** @var int Running counter for unique card/modal DOM ids within a page. */
-    private int $carduid = 0;
-
     /** @var array Map of page filename => source media path in the package. */
     private array $images = [];
 
@@ -78,7 +75,6 @@ class html_builder {
      */
     public function build(\stdClass $parsed): \stdClass {
         $this->images = [];
-        $this->carduid = 0;
         if ($parsed->section !== null) {
             return $this->build_section($parsed);
         }
@@ -537,7 +533,10 @@ class html_builder {
         $modals = [];
         foreach ($imgs as $idx => $ref) {
             $caption = ($caps !== null && isset($caps[$idx])) ? trim($caps[$idx]) : '';
-            $uid = 'lessonImportCard' . (++$this->carduid);
+            // A request-unique id keeps the trigger/modal pair distinct even when
+            // several pages (each built separately) render on one screen — a
+            // per-page counter would repeat and cross-wire the zoom modals.
+            $uid = \html_writer::random_id('lessonImportCard');
             $body = $caption === ''
                 ? ''
                 : '<div class="card-body"><p class="card-text">' . $caption . '</p></div>';

@@ -191,11 +191,17 @@ final class importer_test extends \advanced_testcase {
         // Captions become card text.
         $this->assertStringContainsString('<p class="card-text">Left</p>', $out->html);
         $this->assertStringContainsString('<p class="card-text">Right</p>', $out->html);
-        // A zoom modal per image, wired to the card trigger by a shared id.
+        // A zoom modal per image, each trigger wired to its own modal by a
+        // request-unique id (so cards from different pages never collide when
+        // several pages render on one screen).
         $this->assertStringContainsString('local-lessonimportpptx-cardmodal', $out->html);
-        $this->assertStringContainsString('data-bs-target="#lessonImportCard1"', $out->html);
-        $this->assertStringContainsString('id="lessonImportCard1"', $out->html);
-        $this->assertStringContainsString('id="lessonImportCard2"', $out->html);
+        preg_match_all('/data-bs-target="#(lessonImportCard\w+)"/', $out->html, $targets);
+        preg_match_all('/id="(lessonImportCard\w+)"/', $out->html, $ids);
+        $this->assertCount(2, $targets[1]);
+        $this->assertCount(2, $ids[1]);
+        // Each trigger points at the matching modal, and the two ids differ.
+        $this->assertSame($targets[1], $ids[1]);
+        $this->assertNotSame($ids[1][0], $ids[1][1]);
         $this->assertStringContainsString('@@PLUGINFILE@@/a.png', $out->html);
         $this->assertStringContainsString('@@PLUGINFILE@@/b.png', $out->html);
     }
@@ -244,8 +250,12 @@ final class importer_test extends \advanced_testcase {
         $this->assertStringContainsString('@@PLUGINFILE@@/keep.png', $out);
         $this->assertStringNotContainsString('gone.png', $out);
         $this->assertStringContainsString('local-lessonimportpptx-cardgroup', $out);
-        $this->assertStringContainsString('id="lessonImportCard1"', $out);
-        $this->assertStringNotContainsString('id="lessonImportCard2"', $out);
+        // Exactly one card and one modal remain, still wired to each other.
+        preg_match_all('/id="(lessonImportCard\w+)"/', $out, $ids);
+        preg_match_all('/data-bs-target="#(lessonImportCard\w+)"/', $out, $targets);
+        $this->assertCount(1, $ids[1]);
+        $this->assertCount(1, $targets[1]);
+        $this->assertSame($targets[1][0], $ids[1][0]);
     }
 
     /**
