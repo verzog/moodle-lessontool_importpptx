@@ -877,6 +877,96 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * The importer chosen for an upload follows the file type and the import mode,
+     * and the image mode degrades safely to the editable importer when the
+     * LibreOffice render backend is unavailable.
+     */
+    public function test_importer_selection(): void {
+        global $CFG, $DB;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        require_once($CFG->dirroot . '/local/lessonimportpptx/locallib.php');
+
+        $course = $this->getDataGenerator()->create_course();
+        $lesson = $this->getDataGenerator()->create_module('lesson', ['course' => $course->id]);
+        $context = \context_module::instance($lesson->cmid);
+        $record = $DB->get_record('lesson', ['id' => $lesson->id], '*', MUST_EXIST);
+
+        $pptx = $this->make_named_file('deck.pptx', 'x');
+        $pdf = $this->make_named_file('doc.pdf', '%PDF-1.4');
+
+        $this->assertInstanceOf(
+            \local_lessonimportpptx\importer::class,
+            local_lessonimportpptx_importer($pptx, $record, $context, ['importmode' => 'editable'])
+        );
+        $this->assertInstanceOf(
+            \local_lessonimportpptx\pdf_importer::class,
+            local_lessonimportpptx_importer($pdf, $record, $context, ['importmode' => 'editable'])
+        );
+        // With no LibreOffice on the test host, "images" mode falls back to editable.
+        if (!\local_lessonimportpptx\office\renderer::is_available()) {
+            $this->assertInstanceOf(
+                \local_lessonimportpptx\importer::class,
+                local_lessonimportpptx_importer($pptx, $record, $context, ['importmode' => 'images'])
+            );
+        }
+    }
+
+    /**
+     * The image import backend creates one image content page per rendered slide.
+     */
+    public function test_office_importer_creates_image_pages(): void {
+        global $DB;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $course = $this->getDataGenerator()->create_course();
+        $lesson = $this->getDataGenerator()->create_module('lesson', ['course' => $course->id]);
+        $context = \context_module::instance($lesson->cmid);
+        $record = $DB->get_record('lesson', ['id' => $lesson->id], '*', MUST_EXIST);
+
+        // A stub renderer stands in for LibreOffice + poppler, yielding fixed pages.
+        $renderer = new class extends \local_lessonimportpptx\office\renderer {
+            /**
+             * Yields two fixed pages in place of a real LibreOffice render.
+             *
+             * @param \stored_file $pptx The (ignored) uploaded presentation.
+             * @param int $maxdim The (ignored) maximum image dimension.
+             * @return \Generator Yields [slidenumber, filename, bytes] arrays.
+             */
+            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+                yield [1, 'page-1.png', 'PNGONE'];
+                yield [2, 'page-2.png', 'PNGTWO'];
+            }
+        };
+        $file = $this->make_named_file('deck.pptx', 'x', $record->id, $context);
+        $importer = new \local_lessonimportpptx\office_importer($record, $context, ['imagemaxdim' => 0], $renderer);
+        $this->assertSame(2, $importer->import($file));
+
+        $pages = array_values($DB->get_records('lesson_pages', ['lessonid' => $record->id], 'id ASC'));
+        $this->assertCount(2, $pages);
+        $this->assertStringContainsString('@@PLUGINFILE@@/page-1.png', $pages[0]->contents);
+        $fs = get_file_storage();
+        $this->assertTrue($fs->file_exists(
+            $context->id,
+            'mod_lesson',
+            'page_contents',
+            $pages[0]->id,
+            '/',
+            'page-1.png'
+        ));
+    }
+
+    /**
+     * The image backend's raw slide counter counts slide parts from the archive,
+     * without invoking the editable parser.
+     */
+    public function test_office_count_slides(): void {
+        $this->resetAfterTest();
+        $this->assertSame(9, \local_lessonimportpptx\office_importer::count_slides($this->make_stored_file()));
+    }
+
+    /**
      * When poppler is available, a PDF imports one image content page per page.
      */
     public function test_pdf_import(): void {

@@ -62,7 +62,11 @@ if ($cancelpending) {
 }
 
 $pdfenabled = \local_lessonimportpptx\pdf\renderer::is_available();
-$mform = new \local_lessonimportpptx\form\import_form(null, ['id' => $cm->id, 'pdfenabled' => $pdfenabled]);
+$officeenabled = \local_lessonimportpptx\office\renderer::is_available();
+$mform = new \local_lessonimportpptx\form\import_form(
+    null,
+    ['id' => $cm->id, 'pdfenabled' => $pdfenabled, 'officeenabled' => $officeenabled]
+);
 if ($mform->is_cancelled()) {
     redirect($returnurl);
 }
@@ -82,6 +86,7 @@ if (optional_param('confirm', 0, PARAM_BOOL) && confirm_sesskey()) {
     $options = [
         'imagemaxdim' => optional_param('imagemaxdim', 1600, PARAM_INT),
         'sectioncolour' => optional_param('sectioncolour', '#442980', PARAM_TEXT),
+        'importmode' => optional_param('importmode', 'editable', PARAM_ALPHA),
     ];
     $result = local_lessonimportpptx_process($file, $lesson, $context, $cm, $pendingid, $options);
     if ($result->queued) {
@@ -124,7 +129,9 @@ if ($data = $mform->get_data()) {
     }
 
     try {
-        $count = local_lessonimportpptx_count($file);
+        $count = local_lessonimportpptx_count($file, [
+            'importmode' => (string) ($data->importmode ?? 'editable'),
+        ]);
     } catch (\moodle_exception $e) {
         \local_lessonimportpptx\pending_file::delete($context, $pendingid);
         redirect($PAGE->url, $e->getMessage(), null, \core\output\notification::NOTIFY_ERROR);
@@ -136,6 +143,7 @@ if ($data = $mform->get_data()) {
         'pendingid' => $pendingid,
         'imagemaxdim' => (int) $data->imagemaxdim,
         'sectioncolour' => (string) $data->sectioncolour,
+        'importmode' => (string) ($data->importmode ?? 'editable'),
     ]);
     $cancelurl = new moodle_url($PAGE->url, ['id' => $cm->id, 'cancelpending' => $pendingid]);
     echo $OUTPUT->header();
@@ -147,6 +155,37 @@ if ($data = $mform->get_data()) {
     );
     echo $OUTPUT->footer();
     exit;
+}
+
+// When both backends are available the form offers the editable/images choice
+// and also accepts PDFs. A PDF always imports as page images, so the choice
+// does not apply to it: hide that row while a PDF is selected and show it again
+// when a PowerPoint is chosen, so the visible option always matches what runs.
+if ($pdfenabled && $officeenabled) {
+    $js = <<<'JS'
+require([], function() {
+    var group = document.getElementById('fitem_id_importmode');
+    var picker = document.getElementById('fitem_id_pptxfile');
+    if (!group || !picker) {
+        return;
+    }
+    var sync = function() {
+        var el = picker.querySelector('.filepicker-filename');
+        var name = (el ? el.textContent : '').trim().toLowerCase();
+        var ispdf = name.length >= 4 && name.slice(-4) === '.pdf';
+        group.style.display = ispdf ? 'none' : '';
+    };
+    sync();
+    if (window.MutationObserver) {
+        new MutationObserver(sync).observe(picker, {
+            subtree: true,
+            childList: true,
+            characterData: true
+        });
+    }
+});
+JS;
+    $PAGE->requires->js_amd_inline($js);
 }
 
 echo $OUTPUT->header();

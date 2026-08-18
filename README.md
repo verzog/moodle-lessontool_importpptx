@@ -128,6 +128,26 @@ Copy the plugin so it lives at `local/lessonimportpptx/` (or
 4. The new content pages are appended after any existing pages, each with a
    Continue button; review them under the lesson's **Edit** tab.
 
+## Import as: editable content or faithful images
+
+When the server has **LibreOffice** and the **poppler** tools, the import form
+offers an **Import as** choice:
+
+- **Editable content** (default) — the pure-PHP path described above: each slide
+  becomes text, lists, tables, images and reconstructed diagrams you can keep
+  editing, each on its own content page with a Continue button.
+- **Faithful images** — each slide is rendered to a picture with headless
+  LibreOffice (`.pptx` → PDF → one image per slide, reusing the PDF backend), so
+  the page looks exactly as in PowerPoint — diagrams, SmartArt, gradients and
+  bespoke artwork included. These pages are images, not editable text, so use
+  this when fidelity matters more than editing.
+
+LibreOffice is invoked with argument arrays (never a shell string), in a private
+per-run profile, so there is no command-injection surface. If LibreOffice lives
+outside the system path, set its directory in
+`$CFG->forced_plugin_settings['local_lessonimportpptx']['libreofficepath']`. When
+the tools are absent the option simply does not appear and import stays editable.
+
 ## Import options
 
 The tunable options live on the import form itself, under **Show more**, so each

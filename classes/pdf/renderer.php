@@ -61,7 +61,16 @@ class renderer {
      * @return int The page count (0 if it could not be determined).
      */
     public static function count_pages(\stored_file $pdf): int {
-        $path = self::stage($pdf);
+        return self::count_path(self::stage($pdf));
+    }
+
+    /**
+     * Returns the number of pages in a PDF already staged on disk.
+     *
+     * @param string $path Absolute path to a PDF file on disk.
+     * @return int The page count (0 if it could not be determined).
+     */
+    private static function count_path(string $path): int {
         $result = self::run([self::binary('pdfinfo'), $path]);
         if ($result['code'] !== 0) {
             return 0;
@@ -81,7 +90,28 @@ class renderer {
      * @throws \moodle_exception If rendering fails or the page count exceeds the cap.
      */
     public function render_pages(\stored_file $pdf, int $maxdim): \Generator {
-        $count = self::count_pages($pdf);
+        $dir = make_request_directory();
+        $path = $dir . '/import.pdf';
+        $pdf->copy_content_to($path);
+        yield from $this->render_path($path, $maxdim);
+    }
+
+    /**
+     * Renders each page of a PDF already staged on disk to a web-friendly image.
+     *
+     * Shared by the PowerPoint-to-image (LibreOffice) backend, which converts a
+     * .pptx to a PDF and then reuses this loop.
+     *
+     * @param string $path Absolute path to a PDF file on disk.
+     * @param int $maxdim Maximum image dimension in px (0 keeps the rendered size).
+     * @return \Generator Yields [pagenumber, filename, bytes] arrays.
+     * @throws \moodle_exception If rendering fails or the page count exceeds the cap.
+     */
+    public function render_path(string $path, int $maxdim): \Generator {
+        // Enforce the page cap here, the single entry point both backends share,
+        // so a presentation converted to a long PDF cannot make pdftoppm
+        // rasterise past the limit that only the stored-file path used to check.
+        $count = self::count_path($path);
         if ($count > self::MAX_PAGES) {
             throw new \moodle_exception('errortoomanypages', 'local_lessonimportpptx', '', (object) [
                 'count' => $count,
@@ -89,10 +119,7 @@ class renderer {
             ]);
         }
 
-        $dir = make_request_directory();
-        $path = $dir . '/import.pdf';
-        $pdf->copy_content_to($path);
-        $prefix = $dir . '/page';
+        $prefix = dirname($path) . '/page';
 
         $result = self::run([self::binary('pdftoppm'), '-png', '-r', (string) self::DPI, $path, $prefix]);
         if ($result['code'] !== 0) {
@@ -160,9 +187,9 @@ class renderer {
      * @return array The run result with started, code, out and err keys.
      */
     private static function run(array $command): array {
-        // Hardened hosts disable proc_open entirely; report "not started" so the
-        // PDF backend is simply unavailable instead of a fatal error blocking the
-        // pure-PHP PowerPoint path.
+        // Hosts that disable proc_open remove the function entirely, so guard the
+        // call: is_available() reaches here, and fatalling would take the whole
+        // import page down with it, including the pure-PHP PowerPoint path.
         if (!function_exists('proc_open')) {
             return ['started' => false, 'code' => -1, 'out' => '', 'err' => ''];
         }

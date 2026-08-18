@@ -51,6 +51,20 @@ class import_form extends \moodleform {
         $mform->addRule('pptxfile', null, 'required', null, 'client');
         $mform->addHelpButton('pptxfile', $labelkey, 'local_lessonimportpptx');
 
+        // How to import: editable HTML, or faithful slide images (LibreOffice).
+        // The image mode is only offered when the render backend is available.
+        if (!empty($this->_customdata['officeenabled'])) {
+            $mform->addElement('select', 'importmode', get_string('optionimportmode', 'local_lessonimportpptx'), [
+                'editable' => get_string('importmodeeditable', 'local_lessonimportpptx'),
+                'images' => get_string('importmodeimages', 'local_lessonimportpptx'),
+            ]);
+            $mform->setDefault('importmode', 'editable');
+            $mform->addHelpButton('importmode', 'optionimportmode', 'local_lessonimportpptx');
+        } else {
+            $mform->addElement('hidden', 'importmode', 'editable');
+        }
+        $mform->setType('importmode', PARAM_ALPHA);
+
         // Advanced, per-import options: kept on the form (rather than a site
         // admin settings page) so each deck can be imported with its own values.
         $mform->addElement('text', 'imagemaxdim', get_string('optionimagemaxdim', 'local_lessonimportpptx'));

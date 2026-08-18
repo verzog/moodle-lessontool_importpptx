@@ -52,7 +52,7 @@ function local_lessonimportpptx_process(
     // the CLI if a site needs to.
     $threshold = get_config('local_lessonimportpptx', 'asyncthreshold');
     $threshold = ($threshold === false || $threshold === '') ? 30 : (int) $threshold;
-    $count = local_lessonimportpptx_count($file);
+    $count = local_lessonimportpptx_count($file, $options);
 
     if ($count > $threshold) {
         $task = new \local_lessonimportpptx\task\import_task();
@@ -63,20 +63,41 @@ function local_lessonimportpptx_process(
             'type' => local_lessonimportpptx_type($file),
             'imagemaxdim' => (int) ($options['imagemaxdim'] ?? 1600),
             'sectioncolour' => (string) ($options['sectioncolour'] ?? '#442980'),
+            'importmode' => (string) ($options['importmode'] ?? 'editable'),
         ]);
         $task->set_userid($USER->id);
         \core\task\manager::queue_adhoc_task($task);
         return (object) ['queued' => true, 'count' => $count];
     }
 
-    if (local_lessonimportpptx_type($file) === 'pdf') {
-        $importer = new \local_lessonimportpptx\pdf_importer($lesson, $context, $options);
-    } else {
-        $importer = new \local_lessonimportpptx\importer($lesson, $context, $options);
-    }
+    $importer = local_lessonimportpptx_importer($file, $lesson, $context, $options);
     $created = $importer->import($file);
     \local_lessonimportpptx\pending_file::delete($context, $pendingid);
     return (object) ['queued' => false, 'count' => $created];
+}
+
+/**
+ * Chooses the importer for an upload, honouring the requested import mode.
+ *
+ * A PDF always imports as page images. A PowerPoint imports as editable content
+ * pages by default, or as one rendered image per slide when the "images" mode is
+ * requested and the LibreOffice render backend is available.
+ *
+ * @param stored_file $file The staged upload.
+ * @param stdClass $lesson The target lesson record.
+ * @param context_module $context The lesson's module context.
+ * @param array $options Import options (including 'importmode').
+ * @return object An importer exposing import(stored_file): int.
+ */
+function local_lessonimportpptx_importer(stored_file $file, stdClass $lesson, context_module $context, array $options) {
+    if (local_lessonimportpptx_type($file) === 'pdf') {
+        return new \local_lessonimportpptx\pdf_importer($lesson, $context, $options);
+    }
+    $mode = (string) ($options['importmode'] ?? 'editable');
+    if ($mode === 'images' && \local_lessonimportpptx\office\renderer::is_available()) {
+        return new \local_lessonimportpptx\office_importer($lesson, $context, $options);
+    }
+    return new \local_lessonimportpptx\importer($lesson, $context, $options);
 }
 
 /**
@@ -93,10 +114,16 @@ function local_lessonimportpptx_type(stored_file $file): string {
 /**
  * Counts the units (slides or pages) an upload will produce, per backend.
  *
+ * Counting mirrors the importer routing: a PDF is counted by page, an image-mode
+ * PowerPoint by its raw slide parts (so a Strict OOXML deck bound for LibreOffice
+ * is not blocked by the editable parser), and everything else by the editable
+ * parser's slide count.
+ *
  * @param stored_file $file The uploaded file.
+ * @param array $options Import options (including 'importmode').
  * @return int The number of lesson pages the import will create.
  */
-function local_lessonimportpptx_count(stored_file $file): int {
+function local_lessonimportpptx_count(stored_file $file, array $options = []): int {
     if (local_lessonimportpptx_type($file) === 'pdf') {
         $count = \local_lessonimportpptx\pdf_importer::count_pages($file);
         // Enforce the renderer's page cap here, at confirmation time, so an
@@ -110,6 +137,10 @@ function local_lessonimportpptx_count(stored_file $file): int {
             ]);
         }
         return $count;
+    }
+    $mode = (string) ($options['importmode'] ?? 'editable');
+    if ($mode === 'images' && \local_lessonimportpptx\office\renderer::is_available()) {
+        return \local_lessonimportpptx\office_importer::count_slides($file);
     }
     return \local_lessonimportpptx\importer::count_slides($file);
 }
