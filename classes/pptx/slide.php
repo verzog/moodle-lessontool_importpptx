@@ -822,7 +822,7 @@ class slide {
         if ($rot === 0) {
             return [$y, $x, $cy, $cx];
         }
-        // rot is in 60000ths of a degree. Feed it to deg2rad as a float — the
+        // Rotation is in 60000ths of a degree. Feed it to deg2rad as a float — the
         // footprint below uses abs(cos)/abs(sin), so the angle's sign and any
         // whole-turn wrap do not matter and no normalisation is needed.
         $rad = deg2rad($rot / 60000.0);
