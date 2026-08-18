@@ -43,11 +43,25 @@ class renderer {
     /** @var int Seconds to allow a single LibreOffice conversion before giving up. */
     const CONVERT_TIMEOUT = 120;
 
+    /** @var int Seconds to allow the (cold-start-prone) version probe before giving up. */
+    const PROBE_TIMEOUT = 10;
+
+    /** @var int Seconds a cached availability result is trusted before re-probing. */
+    const AVAILABLE_TTL = 3600;
+
     /** @var bool|null Cached availability result for this request. */
     private static ?bool $available = null;
 
     /**
      * Whether the tools needed to render slides to images are usable.
+     *
+     * Probing means starting the soffice binary, whose first (cold) start can be
+     * slow enough to trip a web-server gateway timeout. The result is therefore
+     * cached across requests so the import page pays that cost at most once per
+     * {@see self::AVAILABLE_TTL}, and the probe itself is bounded by
+     * {@see self::PROBE_TIMEOUT} so even a cold start returns in good time. The
+     * short TTL lets a freshly installed LibreOffice be picked up without a
+     * manual cache purge.
      *
      * @return bool True if LibreOffice and poppler can both be executed.
      */
@@ -55,7 +69,15 @@ class renderer {
         if (self::$available !== null) {
             return self::$available;
         }
+        $cached = get_config('local_lessonimportpptx', 'officeavailable');
+        $checked = (int) get_config('local_lessonimportpptx', 'officeavailablecheck');
+        if ($cached !== false && (time() - $checked) < self::AVAILABLE_TTL) {
+            self::$available = (bool) (int) $cached;
+            return self::$available;
+        }
         self::$available = self::can_run_soffice() && pdfrenderer::is_available();
+        set_config('officeavailable', self::$available ? 1 : 0, 'local_lessonimportpptx');
+        set_config('officeavailablecheck', time(), 'local_lessonimportpptx');
         return self::$available;
     }
 
@@ -170,7 +192,9 @@ class renderer {
      * @return bool True if soffice started and reported a version.
      */
     private static function can_run_soffice(): bool {
-        $result = self::run([self::binary(), '--headless', '--version'], 30);
+        // Just "--version": it prints the version and exits without starting the
+        // headless service, so it is the cheapest way to confirm soffice runs.
+        $result = self::run([self::binary(), '--version'], self::PROBE_TIMEOUT);
         return $result['started'] && stripos($result['out'] . $result['err'], 'libreoffice') !== false;
     }
 
@@ -187,7 +211,14 @@ class renderer {
         }
         $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $pipes = [];
-        $process = @proc_open($command, $descriptors, $pipes, null, ['HOME' => make_request_directory()]);
+        // A fresh HOME isolates the LibreOffice profile, but the env array
+        // replaces the whole environment, so PATH must be carried over or
+        // soffice cannot locate its own helper binaries (soffice.bin, oosplash).
+        $env = [
+            'HOME' => make_request_directory(),
+            'PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin',
+        ];
+        $process = @proc_open($command, $descriptors, $pipes, null, $env);
         if (!is_resource($process)) {
             return ['started' => false, 'code' => -1, 'out' => '', 'err' => ''];
         }
