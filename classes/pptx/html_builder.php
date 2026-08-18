@@ -582,9 +582,11 @@ class html_builder {
     }
 
     /**
-     * Renders a lone image as a centred, size-capped figure.
+     * Renders a lone image as a centred figure, filling the width it had on the
+     * slide when it was a full-bleed graphic and otherwise keeping its own size.
      *
      * @param string $ref The image @@PLUGINFILE@@ reference.
+     * @param int $widthpct The image's on-slide width as a percent of the slide (0 when unknown).
      * @return string The figure HTML.
      */
     private function render_figure(string $ref, int $widthpct = 0): string {

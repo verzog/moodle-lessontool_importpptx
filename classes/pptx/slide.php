@@ -65,6 +65,12 @@ class slide {
      */
     private ?array $textstyles = null;
 
+    /** @var \DOMXPath|null Cached XPath over this slide's layout part (null once tried and absent). */
+    private ?\DOMXPath $layoutxpath = null;
+
+    /** @var bool Whether the layout has been resolved, so an absent layout is not retried. */
+    private bool $layouttried = false;
+
     /** @var shape[] Vector diagram shapes collected from this slide. */
     private array $vectors = [];
 
@@ -343,10 +349,7 @@ class slide {
         $picblock = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
         $picblock->cy = $cy;
         $picblock->cx = $cx;
-        $slidewidth = $this->package->slide_width();
-        if ($cx > 0 && $slidewidth > 0) {
-            $picblock->widthpct = min(100, max(1, (int) round($cx / $slidewidth * 100)));
-        }
+        $picblock->widthpct = $this->width_percent($cx);
         $out[] = $picblock;
         $this->note_photo($pic, $xpath, $tf);
     }
@@ -500,6 +503,7 @@ class slide {
         $fill = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
         $fill->cy = $cy;
         $fill->cx = $cx;
+        $fill->widthpct = $this->width_percent($cx);
         $out[] = $fill;
         // A large picture stored as a shape fill (rather than a <p:pic>) still
         // makes the slide photo-led, which suppresses diagram reconstruction.
@@ -879,13 +883,18 @@ class slide {
      *
      * @param \DOMElement $sp The shape element containing a txBody.
      * @param \DOMXPath $xpath Namespaced XPath.
+     * @param string $category Placeholder category ("body"|"other") for master size lookup.
      * @return array[] Entries of ['text'=>string, 'level'=>int, 'nobullet'=>bool].
      */
     private function paragraphs(\DOMElement $sp, \DOMXPath $xpath, string $category = 'other'): array {
         $out = [];
         $liststyle = $this->list_style_bullets($sp, $xpath);
         $listsizes = $this->list_style_sizes($sp, $xpath);
+        $layoutsizes = $this->layout_sizes($sp, $xpath);
         $mastersizes = $this->master_text_styles()[$category] ?? [];
+        // PowerPoint may shrink overflowing text with a body autofit scale; apply
+        // it so the imported size matches what the slide actually showed.
+        $autofit = $this->autofit_scale($sp, $xpath);
         foreach ($xpath->query('.//a:p', $sp) as $p) {
             $ppr = $xpath->query('a:pPr', $p)->item(0);
             $level = 0;
@@ -902,9 +911,10 @@ class slide {
                 }
             }
             // Size for a run that carries none of its own, most specific first:
-            // the paragraph default, then the shape's list style for this level,
-            // then the slide master's placeholder style for this level.
-            $fallback = $paradefault ?: ($listsizes[$level] ?? ($mastersizes[$level] ?? 0));
+            // the paragraph default, then the shape's list style, then the layout
+            // placeholder's style, then the slide master's style for this level.
+            $fallback = $paradefault
+                ?: ($listsizes[$level] ?? ($layoutsizes[$level] ?? ($mastersizes[$level] ?? 0)));
             $buf = '';
             foreach ($p->childNodes as $node) {
                 if (!$node instanceof \DOMElement || $node->namespaceURI !== package::NS_A) {
@@ -928,6 +938,9 @@ class slide {
                     // shape or master default resolved above.
                     $runsize = $rpr instanceof \DOMElement && $rpr->getAttribute('sz') !== ''
                         ? (int) $rpr->getAttribute('sz') : $fallback;
+                    if ($runsize > 0 && $autofit !== 1.0) {
+                        $runsize = (int) round($runsize * $autofit);
+                    }
                     if ($runsize > 0) {
                         $text = '<span style="font-size:' . self::points($runsize) . 'pt;">' . $text . '</span>';
                     }
@@ -993,6 +1006,70 @@ class slide {
             }
         }
         return $sizes;
+    }
+
+    /**
+     * Namespaced XPath over this slide's layout part, loaded once and cached.
+     *
+     * @return \DOMXPath|null The layout XPath, or null when no layout is reachable.
+     */
+    private function layout_xpath(): ?\DOMXPath {
+        if (!$this->layouttried) {
+            $this->layouttried = true;
+            $path = $this->rel_match($this->path, '#slideLayout\d+\.xml$#');
+            $doc = $path === null ? null : $this->package->get_xml($path);
+            $this->layoutxpath = $doc instanceof \DOMDocument ? package::xpath($doc) : null;
+        }
+        return $this->layoutxpath;
+    }
+
+    /**
+     * Per-level default font sizes from the shape's matching layout placeholder.
+     *
+     * A slide placeholder inherits typography from the placeholder with the same
+     * type and index in its layout, which sits between the shape's own list style
+     * and the master's generic txStyles in the inheritance chain.
+     *
+     * @param \DOMElement $sp The slide shape element.
+     * @param \DOMXPath $xpath Namespaced XPath over the slide.
+     * @return array<int,int> Outline level (0-based) => size in 1/100 pt.
+     */
+    private function layout_sizes(\DOMElement $sp, \DOMXPath $xpath): array {
+        $ph = $xpath->query('./p:nvSpPr/p:nvPr/p:ph', $sp)->item(0);
+        $lx = $this->layout_xpath();
+        if (!$ph instanceof \DOMElement || $lx === null) {
+            return [];
+        }
+        $type = $ph->getAttribute('type');
+        $idx = $ph->getAttribute('idx');
+        foreach ($lx->query('//p:sp') as $lsp) {
+            $lph = $lx->query('./p:nvSpPr/p:nvPr/p:ph', $lsp)->item(0);
+            if (
+                $lph instanceof \DOMElement
+                    && $lph->getAttribute('type') === $type
+                    && $lph->getAttribute('idx') === $idx
+            ) {
+                return $this->list_style_sizes($lsp, $lx);
+            }
+        }
+        return [];
+    }
+
+    /**
+     * The autofit font scale PowerPoint applied to shrink overflowing body text.
+     *
+     * @param \DOMElement $sp The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return float The scale factor (1.0 when the shape does not shrink its text).
+     */
+    private function autofit_scale(\DOMElement $sp, \DOMXPath $xpath): float {
+        $fit = $xpath->query('./p:txBody/a:bodyPr/a:normAutofit', $sp)->item(0);
+        if (!$fit instanceof \DOMElement || $fit->getAttribute('fontScale') === '') {
+            return 1.0;
+        }
+        // fontScale is a percentage in 1/1000 of a percent (100000 means 100%).
+        $scale = (int) $fit->getAttribute('fontScale');
+        return $scale > 0 ? $scale / 100000 : 1.0;
     }
 
     /**
@@ -1065,6 +1142,20 @@ class slide {
             }
         }
         return null;
+    }
+
+    /**
+     * A width in EMU as a percent of the slide width.
+     *
+     * @param int $cx Width in EMU.
+     * @return int Percent in 1-100, or 0 when the width or slide width is unknown.
+     */
+    private function width_percent(int $cx): int {
+        $slidewidth = $this->package->slide_width();
+        if ($cx <= 0 || $slidewidth <= 0) {
+            return 0;
+        }
+        return min(100, max(1, (int) round($cx / $slidewidth * 100)));
     }
 
     /**
