@@ -25,6 +25,7 @@
 namespace local_lessonimportpptx;
 
 use local_lessonimportpptx\office\renderer;
+use local_lessonimportpptx\pptx\package;
 
 /**
  * "Whole deck as images" backend: renders every slide to a faithful image with
@@ -96,6 +97,198 @@ class office_importer {
     }
 
     /**
+     * Returns the title for a rendered page: the slide's own title, else "Slide N".
+     *
+     * @param array $titles Map of 1-based slide position to title text.
+     * @param int $page The 1-based rendered page (slide) number.
+     * @return string The page title, bounded to a database-safe length.
+     */
+    private static function page_title(array $titles, int $page): string {
+        $title = isset($titles[$page]) ? trim((string) $titles[$page]) : '';
+        if ($title === '') {
+            return get_string('slidetitle', 'local_lessonimportpptx', $page);
+        }
+        return \core_text::substr($title, 0, 255);
+    }
+
+    /**
+     * Extracts each slide's title text, in slide order, for the image backend.
+     *
+     * The rendered pages carry no text, so titles are read straight from the
+     * archive with namespace-agnostic XPath — which also copes with Strict Open
+     * XML, exactly the kind of deck the image path exists for. Slides with no
+     * title placeholder map to an empty string, and any read failure yields an
+     * empty map so the caller falls back to numbered titles.
+     *
+     * @param \stored_file $pptx The uploaded presentation.
+     * @return array Map of 1-based slide position to title text.
+     */
+    private static function extract_titles(\stored_file $pptx): array {
+        try {
+            $dir = make_request_directory();
+            $path = $dir . '/titles.pptx';
+            $pptx->copy_content_to($path);
+            $zip = new \ZipArchive();
+            if ($zip->open($path) !== true) {
+                return [];
+            }
+            try {
+                $titles = [];
+                $position = 0;
+                foreach (self::slide_order($zip) as $slidepath) {
+                    $doc = self::load_xml($zip, $slidepath);
+                    // LibreOffice omits hidden slides from the PDF by default, so
+                    // skip them here too, keeping the title positions aligned with
+                    // the visible rendered pages.
+                    if ($doc !== null && self::is_hidden($doc)) {
+                        continue;
+                    }
+                    $position++;
+                    $titles[$position] = $doc !== null ? self::slide_title_text($doc) : '';
+                }
+                return $titles;
+            } finally {
+                $zip->close();
+            }
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Returns the slide part paths in presentation order.
+     *
+     * @param \ZipArchive $zip The open package.
+     * @return string[] Zip entry names of the slides, in order.
+     */
+    private static function slide_order(\ZipArchive $zip): array {
+        $presentation = self::load_xml($zip, 'ppt/presentation.xml');
+        $rels = self::load_xml($zip, 'ppt/_rels/presentation.xml.rels');
+        if ($presentation === null || $rels === null) {
+            return [];
+        }
+        $targets = [];
+        foreach ($rels->getElementsByTagName('*') as $rel) {
+            if ($rel->localName === 'Relationship' && $rel->getAttribute('Id') !== '') {
+                $targets[$rel->getAttribute('Id')] = $rel->getAttribute('Target');
+            }
+        }
+        $paths = [];
+        $xpath = new \DOMXPath($presentation);
+        foreach ($xpath->query("//*[local-name()='sldIdLst']/*[local-name()='sldId']") as $sldid) {
+            $rid = self::relationship_id($sldid);
+            $target = ($rid !== null && isset($targets[$rid])) ? self::resolve_target($targets[$rid]) : null;
+            if ($target !== null && $zip->locateName($target) !== false) {
+                $paths[] = $target;
+            }
+        }
+        return $paths;
+    }
+
+    /**
+     * Reads the relationship id (r:id) of a sldId element, namespace-agnostically.
+     *
+     * @param \DOMElement $sldid The p:sldId element.
+     * @return string|null The relationship id, or null if absent.
+     */
+    private static function relationship_id(\DOMElement $sldid): ?string {
+        foreach (iterator_to_array($sldid->attributes) as $attr) {
+            if ($attr->localName === 'id' && (string) $attr->namespaceURI !== '') {
+                return $attr->value;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Resolves a presentation relationship target to a package (zip) path.
+     *
+     * @param string $target The relationship Target (relative to ppt/, or absolute).
+     * @return string|null The normalised zip entry name, or null if empty.
+     */
+    private static function resolve_target(string $target): ?string {
+        if ($target === '') {
+            return null;
+        }
+        if ($target[0] === '/') {
+            return ltrim($target, '/');
+        }
+        $parts = [];
+        foreach (explode('/', 'ppt/' . $target) as $seg) {
+            if ($seg === '..') {
+                array_pop($parts);
+            } else if ($seg !== '.' && $seg !== '') {
+                $parts[] = $seg;
+            }
+        }
+        return implode('/', $parts);
+    }
+
+    /**
+     * Whether a slide is hidden (p:sld show="0"), which LibreOffice skips on export.
+     *
+     * @param \DOMDocument $doc The parsed slide document.
+     * @return bool True if the slide is marked hidden.
+     */
+    private static function is_hidden(\DOMDocument $doc): bool {
+        $root = $doc->documentElement;
+        return $root instanceof \DOMElement && $root->getAttribute('show') === '0';
+    }
+
+    /**
+     * Extracts the title placeholder's text from a parsed slide document.
+     *
+     * @param \DOMDocument $doc The parsed slide document.
+     * @return string The title text (empty when the slide has no title placeholder).
+     */
+    private static function slide_title_text(\DOMDocument $doc): string {
+        $xpath = new \DOMXPath($doc);
+        $query = "//*[local-name()='sp'][.//*[local-name()='ph'][@type='title' or @type='ctrTitle']][1]";
+        $sp = $xpath->query($query)->item(0);
+        if (!$sp instanceof \DOMElement) {
+            return '';
+        }
+        $lines = [];
+        foreach ($xpath->query(".//*[local-name()='p']", $sp) as $paragraph) {
+            $line = '';
+            foreach ($xpath->query(".//*[local-name()='t']", $paragraph) as $run) {
+                $line .= $run->textContent;
+            }
+            if (trim($line) !== '') {
+                $lines[] = $line;
+            }
+        }
+        return trim(preg_replace('/\s+/u', ' ', implode(' ', $lines)));
+    }
+
+    /**
+     * Loads a package part into a DOMDocument, or null if missing/unparseable.
+     *
+     * @param \ZipArchive $zip The open package.
+     * @param string $name The zip entry name.
+     * @return \DOMDocument|null The parsed document, or null.
+     */
+    private static function load_xml(\ZipArchive $zip, string $name): ?\DOMDocument {
+        // Bound the part by its declared uncompressed size before inflating it,
+        // so a zip-bombed title/presentation part cannot exhaust the worker here
+        // (this read happens before the render path's whole-archive size guard).
+        $stat = $zip->statName($name);
+        if ($stat === false || (int) $stat['size'] > package::MAX_PART_SIZE) {
+            return null;
+        }
+        $data = $zip->getFromName($name);
+        if ($data === false || $data === '') {
+            return null;
+        }
+        $doc = new \DOMDocument();
+        $prev = libxml_use_internal_errors(true);
+        $ok = $doc->loadXML($data, LIBXML_NONET);
+        libxml_clear_errors();
+        libxml_use_internal_errors($prev);
+        return $ok ? $doc : null;
+    }
+
+    /**
      * Imports the presentation, creating one image content page per slide.
      *
      * @param \stored_file $pptx The uploaded presentation.
@@ -111,6 +304,7 @@ class office_importer {
         try {
             $renderer = $this->renderer ?? new renderer();
             $stagedir = make_request_directory();
+            $titles = self::extract_titles($pptx);
 
             // Render the whole deck to staged files BEFORE opening the transaction:
             // the LibreOffice conversion and rasterisation can run up to the
@@ -125,7 +319,7 @@ class office_importer {
                     throw new \moodle_exception('errorofficerender', 'local_lessonimportpptx');
                 }
                 $staged[] = [
-                    'title' => get_string('slidetitle', 'local_lessonimportpptx', $page),
+                    'title' => self::page_title($titles, $page),
                     'filename' => $filename,
                     'path' => $file,
                 ];

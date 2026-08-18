@@ -83,7 +83,10 @@ class renderer {
         // launch its own cold probe: the winner probes and stores the result and
         // the rest reuse it once the lock frees. A failed lock just probes anyway.
         $factory = \core\lock\lock_config::get_lock_factory('local_lessonimportpptx_office');
-        $lock = $factory->get_lock('probe', self::PROBE_TIMEOUT + 5);
+        // Scope the lock to this environment's cache key so only requests that
+        // would share the resulting value serialise; nodes with different keys
+        // (and thus different results) do not needlessly wait on each other.
+        $lock = $factory->get_lock(self::cache_key('probe'), self::PROBE_TIMEOUT + 5);
         try {
             if ($lock && ($hit = self::read_cache()) !== null) {
                 self::$available = $hit;
@@ -115,13 +118,25 @@ class renderer {
     }
 
     /**
-     * Builds a per-host config key so one node's cached probe is not read by another.
+     * Builds a per-environment config key so a probe cached by one runtime is not
+     * read by another that resolves binaries differently.
+     *
+     * Availability depends on where soffice/poppler are found, so the key mixes in
+     * the host name, PATH and the configured binary directories: a web (php-fpm)
+     * and a cron runtime on the same host but with different PATHs therefore cache
+     * independently rather than trusting each other's result.
      *
      * @param string $name The base config name.
-     * @return string The name suffixed with a short digest of this host's name.
+     * @return string The name suffixed with a short digest of the resolution environment.
      */
     private static function cache_key(string $name): string {
-        return $name . '_' . substr(md5((string) php_uname('n')), 0, 12);
+        $signature = implode('|', [
+            (string) php_uname('n'),
+            (string) getenv('PATH'),
+            (string) get_config('local_lessonimportpptx', 'libreofficepath'),
+            (string) get_config('local_lessonimportpptx', 'popplerpath'),
+        ]);
+        return $name . '_' . substr(md5($signature), 0, 12);
     }
 
     /**
