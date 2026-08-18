@@ -157,6 +157,16 @@ deck can be imported with its own values:
   originals). Default 1600.
 - **Section panel colour** — fallback plate colour (e.g. `#442980`) used only
   when a section slide's own fill cannot be read.
+- **Images as card group** — off by default. When on, each run of ordinary
+  pictures is rendered as a Bootstrap **card group** — the same markup the
+  [`tiny_bootstrap`](https://github.com/verzog/moodle-tiny_bootstrap) editor
+  plugin inserts — instead of the plain image grid. Every picture becomes a card
+  with a click-to-enlarge zoom, and a paired short caption becomes the card
+  text. Reconstructed diagrams (SmartArt and shape flows) are never turned into
+  cards. This applies to editable import only; it has no effect on faithful-image
+  import. The zoom relies on the theme's bundled Bootstrap, so no extra plugin is
+  needed to view the result — though `tiny_bootstrap` lets a teacher keep editing
+  the cards afterwards.
 
 Access to the importer is controlled by the `local/lessonimportpptx:import`
 capability (allowed for editing teachers and managers by default). The
