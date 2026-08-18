@@ -588,7 +588,10 @@ class html_builder {
         if ($size <= 0) {
             return $html;
         }
-        $html = preg_replace('/font-size:\s*[0-9.]+pt;?/', '', $html);
+        // Unwrap only the font-size spans the parser itself generated, never
+        // arbitrary slide text that happens to read "font-size: ..pt", then wrap
+        // the whole block at the chosen size.
+        $html = preg_replace('#<span style="font-size:[0-9.]+pt;">(.*?)</span>#s', '$1', $html);
         return '<div style="font-size:' . $size . 'pt;">' . $html . '</div>';
     }
 
