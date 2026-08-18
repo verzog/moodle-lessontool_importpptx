@@ -252,8 +252,7 @@ class slide {
                         $html = $this->table_html($ch, $xpath);
                     }
                     if ($html !== null) {
-                        [$y, $x] = $this->offset($ch, $xpath, $tf);
-                        [$cy, $cx] = $this->extent($ch, $xpath, $tf);
+                        [$y, $x, $cy, $cx] = $this->geometry($ch, $xpath, $tf);
                         $htmlblock = new block(block::TYPE_HTML, $y, $x, $html);
                         $htmlblock->cy = $cy;
                         $htmlblock->cx = $cx;
@@ -334,8 +333,7 @@ class slide {
         if ($rid === '' || !isset($this->rels[$rid])) {
             return;
         }
-        [$y, $x] = $this->offset($pic, $xpath, $tf);
-        [$cy, $cx] = $this->extent($pic, $xpath, $tf);
+        [$y, $x, $cy, $cx] = $this->geometry($pic, $xpath, $tf);
         $picblock = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
         $picblock->cy = $cy;
         $picblock->cx = $cx;
@@ -386,8 +384,7 @@ class slide {
         if ($this->is_furniture($sp, $xpath)) {
             return;
         }
-        [$y, $x] = $this->offset($sp, $xpath, $tf);
-        [$cy, $cx] = $this->extent($sp, $xpath, $tf);
+        [$y, $x, $cy, $cx] = $this->geometry($sp, $xpath, $tf);
         // A shape can carry an image as a picture fill rather than as a <p:pic>;
         // recover it for title and ordinary shapes alike (a title placeholder may
         // still have a picture fill), so styled frames and placeholders are not lost.
@@ -781,7 +778,6 @@ class slide {
         // Anchor on the transform's own extent (the a:ext beside a:off in the
         // shape's xfrm), not the first descendant a:ext: a blip extension list
         // — e.g. an SVG-backed image — also carries an a:ext, without cx/cy.
-        // (A shape rotated off-axis is approximated by its unrotated box.)
         $off = $xpath->query('.//a:off', $el)->item(0);
         $ext = $off instanceof \DOMElement ? $xpath->query('parent::*/a:ext', $off)->item(0) : null;
         if ($ext instanceof \DOMElement && $ext->getAttribute('cx') !== '') {
@@ -794,6 +790,48 @@ class slide {
             return [$cy, $cx];
         }
         return [0, 0];
+    }
+
+    /**
+     * Returns a shape's on-slide bounding box as [y, x, cy, cx] in EMU.
+     *
+     * The stored a:off/a:ext describe the shape's unrotated box. When the shape
+     * carries an a:xfrm rotation, that box no longer matches what the reader
+     * sees: a text box turned a quarter turn is tall and narrow on screen while
+     * its extents still read wide and short. Row-overlap and column grouping key
+     * off the on-slide footprint, so rotate the box about its centre (rotation is
+     * centre-anchored in DrawingML) and return the axis-aligned bounds — swapping
+     * the extents for a quarter turn and shifting the origin to keep the centre
+     * fixed. Group scaling is assumed roughly uniform, so it is applied before the
+     * rotation via offset()/extent().
+     *
+     * @param \DOMElement $el The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @param array|null $tf Coordinate transform inherited from enclosing groups.
+     * @return array The [y, x, cy, cx] bounds; cy/cx are 0 when no extent is present.
+     */
+    private function geometry(\DOMElement $el, \DOMXPath $xpath, ?array $tf = null): array {
+        [$y, $x] = $this->offset($el, $xpath, $tf);
+        [$cy, $cx] = $this->extent($el, $xpath, $tf);
+        if ($cx <= 0 || $cy <= 0 || $x === self::NO_OFFSET) {
+            return [$y, $x, $cy, $cx];
+        }
+        $off = $xpath->query('.//a:off', $el)->item(0);
+        $xfrm = $off instanceof \DOMElement ? $xpath->query('parent::*', $off)->item(0) : null;
+        $rot = $xfrm instanceof \DOMElement ? (int) $xfrm->getAttribute('rot') : 0;
+        // rot is in 60000ths of a degree; normalise to [0, 360).
+        $deg = (($rot / 60000) % 360 + 360) % 360;
+        if ($deg === 0) {
+            return [$y, $x, $cy, $cx];
+        }
+        $rad = deg2rad($deg);
+        $cos = abs(cos($rad));
+        $sin = abs(sin($rad));
+        $w = (int) round($cx * $cos + $cy * $sin);
+        $h = (int) round($cx * $sin + $cy * $cos);
+        $centrex = $x + $cx / 2;
+        $centrey = $y + $cy / 2;
+        return [(int) round($centrey - $h / 2), (int) round($centrex - $w / 2), $h, $w];
     }
 
     /**
