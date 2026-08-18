@@ -253,7 +253,11 @@ class slide {
                     }
                     if ($html !== null) {
                         [$y, $x] = $this->offset($ch, $xpath, $tf);
-                        $out[] = new block(block::TYPE_HTML, $y, $x, $html);
+                        [$cy, $cx] = $this->extent($ch, $xpath, $tf);
+                        $htmlblock = new block(block::TYPE_HTML, $y, $x, $html);
+                        $htmlblock->cy = $cy;
+                        $htmlblock->cx = $cx;
+                        $out[] = $htmlblock;
                     }
                     break;
                 case 'cxnSp':
@@ -331,7 +335,11 @@ class slide {
             return;
         }
         [$y, $x] = $this->offset($pic, $xpath, $tf);
-        $out[] = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
+        [$cy, $cx] = $this->extent($pic, $xpath, $tf);
+        $picblock = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
+        $picblock->cy = $cy;
+        $picblock->cx = $cx;
+        $out[] = $picblock;
         $this->note_photo($pic, $xpath, $tf);
     }
 
@@ -379,14 +387,18 @@ class slide {
             return;
         }
         [$y, $x] = $this->offset($sp, $xpath, $tf);
+        [$cy, $cx] = $this->extent($sp, $xpath, $tf);
         // A shape can carry an image as a picture fill rather than as a <p:pic>;
         // recover it for title and ordinary shapes alike (a title placeholder may
         // still have a picture fill), so styled frames and placeholders are not lost.
-        $this->collect_shape_fill($sp, $xpath, $out, $y, $x);
+        $this->collect_shape_fill($sp, $xpath, $out, $y, $x, $cy, $cx);
         if ($this->is_title($sp, $xpath)) {
             $text = $this->raw_text($sp, $xpath);
             if ($text !== '') {
-                $out[] = new block(block::TYPE_TITLE, $y, $x, $text);
+                $title = new block(block::TYPE_TITLE, $y, $x, $text);
+                $title->cy = $cy;
+                $title->cx = $cx;
+                $out[] = $title;
             }
             return;
         }
@@ -418,6 +430,8 @@ class slide {
         // box that mixes an intro line with a bulleted list renders the intro as
         // prose and only the bulleted paragraphs as a list.
         $block->nobullets = array_column($paras, 'nobullet');
+        $block->cy = $cy;
+        $block->cx = $cx;
         $out[] = $block;
 
         // When the shape is a diagram node, this text block mirrors its label and is
@@ -455,9 +469,19 @@ class slide {
      * @param block[] $out Accumulator, passed by reference.
      * @param int $y The shape's vertical offset in EMU.
      * @param int $x The shape's horizontal offset in EMU.
+     * @param int $cy The shape's height in EMU (0 when unknown).
+     * @param int $cx The shape's width in EMU (0 when unknown).
      * @return void
      */
-    private function collect_shape_fill(\DOMElement $sp, \DOMXPath $xpath, array &$out, int $y, int $x): void {
+    private function collect_shape_fill(
+        \DOMElement $sp,
+        \DOMXPath $xpath,
+        array &$out,
+        int $y,
+        int $x,
+        int $cy = 0,
+        int $cx = 0
+    ): void {
         $blip = $xpath->query('./p:spPr/a:blipFill/a:blip', $sp)->item(0);
         if (!$blip instanceof \DOMElement) {
             return;
@@ -466,7 +490,10 @@ class slide {
         if ($rid === '' || !isset($this->rels[$rid])) {
             return;
         }
-        $out[] = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
+        $fill = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
+        $fill->cy = $cy;
+        $fill->cx = $cx;
+        $out[] = $fill;
         // A large picture stored as a shape fill (rather than a <p:pic>) still
         // makes the slide photo-led, which suppresses diagram reconstruction.
         $this->note_photo($sp, $xpath, null);
@@ -740,6 +767,39 @@ class slide {
             return [$y, $x];
         }
         return [self::NO_OFFSET, self::NO_OFFSET];
+    }
+
+    /**
+     * Reads a shape's extent (width, height) in EMU, scaled by any group transform.
+     *
+     * @param \DOMElement $el The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @param array|null $tf Coordinate transform inherited from enclosing groups.
+     * @return array A [height, width] pair in EMU, or [0, 0] when no extent is present.
+     */
+    private function extent(\DOMElement $el, \DOMXPath $xpath, ?array $tf = null): array {
+        $ext = $xpath->query('.//a:ext', $el)->item(0);
+        if ($ext instanceof \DOMElement && $ext->getAttribute('cx') !== '') {
+            $cx = (int) $ext->getAttribute('cx');
+            $cy = (int) $ext->getAttribute('cy');
+            if ($tf !== null) {
+                $cx = (int) round($cx * $tf['sx']);
+                $cy = (int) round($cy * $tf['sy']);
+            }
+            // A quarter-turn rotation swaps a shape's footprint on the slide, so
+            // its vertical extent becomes the unrotated width. rot is in 60000ths
+            // of a degree; treat rotations nearer a quarter-turn than to level as
+            // a swap so the overlap grouper sees the true on-slide height.
+            $xfrm = $ext->parentNode;
+            if ($xfrm instanceof \DOMElement && $xfrm->getAttribute('rot') !== '') {
+                $deg = (int) round(abs((int) $xfrm->getAttribute('rot')) / 60000) % 180;
+                if ($deg >= 45 && $deg < 135) {
+                    [$cx, $cy] = [$cy, $cx];
+                }
+            }
+            return [$cy, $cx];
+        }
+        return [0, 0];
     }
 
     /**

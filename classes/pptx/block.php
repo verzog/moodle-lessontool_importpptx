@@ -52,6 +52,12 @@ class block {
     /** @var int Horizontal offset in EMU. */
     public int $x;
 
+    /** @var int Width in EMU, or 0 when unknown (e.g. a synthetic test block). */
+    public int $cx = 0;
+
+    /** @var int Height in EMU, or 0 when unknown. Enables overlap-based row grouping. */
+    public int $cy = 0;
+
     /** @var string|string[] The block payload; shape depends on {@see block::$type}. */
     public $content;
 
