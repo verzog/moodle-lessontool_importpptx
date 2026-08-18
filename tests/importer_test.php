@@ -967,6 +967,48 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * Image pages are titled from each slide's own title, falling back to
+     * "Slide N" for a slide with no title placeholder.
+     */
+    public function test_office_importer_titles_from_slides(): void {
+        global $DB;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $course = $this->getDataGenerator()->create_course();
+        $lesson = $this->getDataGenerator()->create_module('lesson', ['course' => $course->id]);
+        $context = \context_module::instance($lesson->cmid);
+        $record = $DB->get_record('lesson', ['id' => $lesson->id], '*', MUST_EXIST);
+
+        // Render four fixed pages; the titles come from the real fixture deck.
+        $renderer = new class extends \local_lessonimportpptx\office\renderer {
+            /**
+             * Yields four fixed pages in place of a real LibreOffice render.
+             *
+             * @param \stored_file $pptx The (ignored) uploaded presentation.
+             * @param int $maxdim The (ignored) maximum image dimension.
+             * @return \Generator Yields [slidenumber, filename, bytes] arrays.
+             */
+            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+                yield [1, 'page-1.png', 'A'];
+                yield [2, 'page-2.png', 'B'];
+                yield [3, 'page-3.png', 'C'];
+                yield [9, 'page-9.png', 'D'];
+            }
+        };
+        $file = $this->make_stored_file($record->id, $context);
+        $importer = new \local_lessonimportpptx\office_importer($record, $context, ['imagemaxdim' => 0], $renderer);
+        $this->assertSame(4, $importer->import($file));
+
+        $pages = array_values($DB->get_records('lesson_pages', ['lessonid' => $record->id], 'id ASC'));
+        $this->assertSame('Presentation Title', $pages[0]->title);
+        $this->assertSame('Overview', $pages[1]->title);
+        $this->assertSame('Clock', $pages[2]->title);
+        // Slide 9 has no title placeholder, so it falls back to the numbered title.
+        $this->assertSame(get_string('slidetitle', 'local_lessonimportpptx', 9), $pages[3]->title);
+    }
+
+    /**
      * When poppler is available, a PDF imports one image content page per page.
      */
     public function test_pdf_import(): void {
