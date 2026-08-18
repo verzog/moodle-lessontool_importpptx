@@ -1067,7 +1067,7 @@ class slide {
         if (!$fit instanceof \DOMElement || $fit->getAttribute('fontScale') === '') {
             return 1.0;
         }
-        // fontScale is a percentage in 1/1000 of a percent (100000 means 100%).
+        // The fontScale is a percentage in 1/1000 of a percent (100000 means 100%).
         $scale = (int) $fit->getAttribute('fontScale');
         return $scale > 0 ? $scale / 100000 : 1.0;
     }
