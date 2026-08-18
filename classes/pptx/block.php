@@ -58,6 +58,9 @@ class block {
     /** @var int Height in EMU, or 0 when unknown. Enables overlap-based row grouping. */
     public int $cy = 0;
 
+    /** @var int On-slide width as a percent of the slide width (0 when unknown). Sizes a lone image. */
+    public int $widthpct = 0;
+
     /** @var string|string[] The block payload; shape depends on {@see block::$type}. */
     public $content;
 
