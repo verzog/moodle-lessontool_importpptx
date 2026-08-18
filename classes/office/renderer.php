@@ -63,22 +63,65 @@ class renderer {
      * short TTL lets a freshly installed LibreOffice be picked up without a
      * manual cache purge.
      *
+     * The cache is keyed per host: availability is a property of the binaries on
+     * this node, but plugin config is shared site-wide, so a web node's result
+     * must not be trusted by a cron worker (or vice versa) that may have a
+     * different PATH or packages. Each node caches, and trusts, only its own probe.
+     *
      * @return bool True if LibreOffice and poppler can both be executed.
      */
     public static function is_available(): bool {
         if (self::$available !== null) {
             return self::$available;
         }
-        $cached = get_config('local_lessonimportpptx', 'officeavailable');
-        $checked = (int) get_config('local_lessonimportpptx', 'officeavailablecheck');
-        if ($cached !== false && (time() - $checked) < self::AVAILABLE_TTL) {
-            self::$available = (bool) (int) $cached;
+        $hit = self::read_cache();
+        if ($hit !== null) {
+            self::$available = $hit;
             return self::$available;
         }
-        self::$available = self::can_run_soffice() && pdfrenderer::is_available();
-        set_config('officeavailable', self::$available ? 1 : 0, 'local_lessonimportpptx');
-        set_config('officeavailablecheck', time(), 'local_lessonimportpptx');
-        return self::$available;
+        // Serialise the refresh so a burst of cache-miss requests does not each
+        // launch its own cold probe: the winner probes and stores the result and
+        // the rest reuse it once the lock frees. A failed lock just probes anyway.
+        $factory = \core\lock\lock_config::get_lock_factory('local_lessonimportpptx_office');
+        $lock = $factory->get_lock('probe', self::PROBE_TIMEOUT + 5);
+        try {
+            if ($lock && ($hit = self::read_cache()) !== null) {
+                self::$available = $hit;
+                return self::$available;
+            }
+            self::$available = self::can_run_soffice() && pdfrenderer::is_available();
+            set_config(self::cache_key('officeavailable'), self::$available ? 1 : 0, 'local_lessonimportpptx');
+            set_config(self::cache_key('officeavailablecheck'), time(), 'local_lessonimportpptx');
+            return self::$available;
+        } finally {
+            if ($lock) {
+                $lock->release();
+            }
+        }
+    }
+
+    /**
+     * Returns this host's cached availability if still fresh, else null.
+     *
+     * @return bool|null The cached result, or null when absent or past the TTL.
+     */
+    private static function read_cache(): ?bool {
+        $cached = get_config('local_lessonimportpptx', self::cache_key('officeavailable'));
+        $checked = (int) get_config('local_lessonimportpptx', self::cache_key('officeavailablecheck'));
+        if ($cached !== false && (time() - $checked) < self::AVAILABLE_TTL) {
+            return (bool) (int) $cached;
+        }
+        return null;
+    }
+
+    /**
+     * Builds a per-host config key so one node's cached probe is not read by another.
+     *
+     * @param string $name The base config name.
+     * @return string The name suffixed with a short digest of this host's name.
+     */
+    private static function cache_key(string $name): string {
+        return $name . '_' . substr(md5((string) php_uname('n')), 0, 12);
     }
 
     /**
