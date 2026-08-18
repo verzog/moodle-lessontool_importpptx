@@ -167,6 +167,98 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * With the card-group option on, a captioned image row becomes a Bootstrap
+     * card group: each picture is a card whose caption is the card text and whose
+     * click-to-enlarge zoom modal shares the card's id.
+     */
+    public function test_captioned_images_become_card_group_when_enabled(): void {
+        $builder = new html_builder('#442980', true);
+        $parsed = (object) [
+            'title' => 'Gallery',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_TEXT, 1000000, 0, ['Left']),
+                new block(block::TYPE_TEXT, 1000000, 4000000, ['Right']),
+                new block(block::TYPE_IMAGE, 2000000, 0, 'ppt/media/a.png'),
+                new block(block::TYPE_IMAGE, 2000000, 4000000, 'ppt/media/b.png'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        // Card group, not the plain grid.
+        $this->assertStringContainsString('local-lessonimportpptx-cardgroup', $out->html);
+        $this->assertStringNotContainsString('local-lessonimportpptx-grid', $out->html);
+        $this->assertStringContainsString('class="card h-100"', $out->html);
+        // Captions become card text.
+        $this->assertStringContainsString('<p class="card-text">Left</p>', $out->html);
+        $this->assertStringContainsString('<p class="card-text">Right</p>', $out->html);
+        // A zoom modal per image, each trigger wired to its own modal by a
+        // request-unique id (so cards from different pages never collide when
+        // several pages render on one screen).
+        $this->assertStringContainsString('local-lessonimportpptx-cardmodal', $out->html);
+        preg_match_all('/data-bs-target="#(lessonImportCard\w+)"/', $out->html, $targets);
+        preg_match_all('/id="(lessonImportCard\w+)"/', $out->html, $ids);
+        $this->assertCount(2, $targets[1]);
+        $this->assertCount(2, $ids[1]);
+        // Each trigger points at the matching modal, and the two ids differ.
+        $this->assertSame($targets[1], $ids[1]);
+        $this->assertNotSame($ids[1][0], $ids[1][1]);
+        $this->assertStringContainsString('@@PLUGINFILE@@/a.png', $out->html);
+        $this->assertStringContainsString('@@PLUGINFILE@@/b.png', $out->html);
+    }
+
+    /**
+     * With the card-group option on, a lone image becomes a single-card group
+     * (no card body, since it has no caption) rather than a centred figure.
+     */
+    public function test_single_image_becomes_card_when_enabled(): void {
+        $builder = new html_builder('#442980', true);
+        $parsed = (object) [
+            'title' => 'One image',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_IMAGE, 3000000, 3000000, 'ppt/media/pic.png'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cardgroup', $out->html);
+        $this->assertStringContainsString('local-lessonimportpptx-card', $out->html);
+        $this->assertStringNotContainsString('local-lessonimportpptx-figure', $out->html);
+        // No caption, so no card body.
+        $this->assertStringNotContainsString('card-body', $out->html);
+        $this->assertCount(1, $out->images);
+    }
+
+    /**
+     * A failed card image drops both its card and its now-imageless zoom modal,
+     * and an emptied card group is removed entirely.
+     */
+    public function test_failed_card_image_removes_card_and_modal(): void {
+        $method = new \ReflectionMethod(importer::class, 'strip_images');
+        $method->setAccessible(true);
+        $builder = new html_builder('#442980', true);
+        $parsed = (object) [
+            'title' => 'Gallery',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_IMAGE, 2000000, 0, 'ppt/media/keep.png'),
+                new block(block::TYPE_IMAGE, 2000000, 4000000, 'ppt/media/gone.png'),
+            ],
+        ];
+        $html = $builder->build($parsed)->html;
+        $out = $method->invoke(null, $html, ['gone.png']);
+        // The good card and its modal survive; the failed one and its modal go.
+        $this->assertStringContainsString('@@PLUGINFILE@@/keep.png', $out);
+        $this->assertStringNotContainsString('gone.png', $out);
+        $this->assertStringContainsString('local-lessonimportpptx-cardgroup', $out);
+        // Exactly one card and one modal remain, still wired to each other.
+        preg_match_all('/id="(lessonImportCard\w+)"/', $out, $ids);
+        preg_match_all('/data-bs-target="#(lessonImportCard\w+)"/', $out, $targets);
+        $this->assertCount(1, $ids[1]);
+        $this->assertCount(1, $targets[1]);
+        $this->assertSame($targets[1][0], $ids[1][0]);
+    }
+
+    /**
      * Blocks sharing an x (e.g. a picture fill and its text) stack, not columns.
      */
     public function test_same_x_blocks_are_not_columns(): void {
