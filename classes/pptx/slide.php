@@ -819,12 +819,13 @@ class slide {
         $off = $xpath->query('.//a:off', $el)->item(0);
         $xfrm = $off instanceof \DOMElement ? $xpath->query('parent::*', $off)->item(0) : null;
         $rot = $xfrm instanceof \DOMElement ? (int) $xfrm->getAttribute('rot') : 0;
-        // rot is in 60000ths of a degree; normalise to [0, 360).
-        $deg = (($rot / 60000) % 360 + 360) % 360;
-        if ($deg === 0) {
+        if ($rot === 0) {
             return [$y, $x, $cy, $cx];
         }
-        $rad = deg2rad($deg);
+        // rot is in 60000ths of a degree. Feed it to deg2rad as a float — the
+        // footprint below uses abs(cos)/abs(sin), so the angle's sign and any
+        // whole-turn wrap do not matter and no normalisation is needed.
+        $rad = deg2rad($rot / 60000.0);
         $cos = abs(cos($rad));
         $sin = abs(sin($rad));
         $w = (int) round($cx * $cos + $cy * $sin);
