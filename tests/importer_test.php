@@ -250,6 +250,57 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A lone image that filled most of the slide (a full-bleed title or break
+     * graphic) is rendered at that width so it fills the page, not left small.
+     */
+    public function test_full_slide_image_fills_width(): void {
+        $builder = new html_builder('#442980');
+        $image = new block(block::TYPE_IMAGE, 0, 0, 'ppt/media/pic.png');
+        $image->widthpct = 95;
+        $parsed = (object) ['title' => 'Break', 'section' => null, 'blocks' => [$image]];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-figure', $out->html);
+        $this->assertStringContainsString('width:95%', $out->html);
+    }
+
+    /**
+     * A small lone image keeps its natural size (no forced width), so a logo or
+     * thumbnail is not stretched up to the full column width.
+     */
+    public function test_small_image_keeps_natural_size(): void {
+        $builder = new html_builder('#442980');
+        $image = new block(block::TYPE_IMAGE, 3000000, 3000000, 'ppt/media/pic.png');
+        $image->widthpct = 30;
+        $parsed = (object) ['title' => 'Logo', 'section' => null, 'blocks' => [$image]];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-figure', $out->html);
+        $this->assertStringNotContainsString('style="width:', $out->html);
+    }
+
+    /**
+     * A run's on-slide font size is preserved. An explicit run size wins; a run
+     * that sets none inherits its paragraph level's size from the slide master's
+     * txStyles, so large body text is not flattened to the reader default.
+     */
+    public function test_font_size_preserved_from_run_and_master(): void {
+        $package = new package(__DIR__ . '/fixtures/sample_typography.pptx');
+        $parsed = (new slide($package, 'ppt/slides/slide1.xml'))->parse();
+        $text = '';
+        foreach ($parsed->blocks as $b) {
+            if ($b->type === block::TYPE_TEXT) {
+                $text .= implode('|', (array) $b->content);
+            }
+        }
+        $package->close();
+        // The body placeholder inherits the master body style by outline level:
+        // level 1 resolves to 28pt and level 2 to 24pt.
+        $this->assertStringContainsString('font-size:28pt', $text);
+        $this->assertStringContainsString('font-size:24pt', $text);
+        // The free text box sets its own 12pt run size, which wins over inheritance.
+        $this->assertStringContainsString('font-size:12pt', $text);
+    }
+
+    /**
      * With the card-group option on, a captioned image row becomes a Bootstrap
      * card group: each picture is a card whose caption is the card text and whose
      * click-to-enlarge zoom modal shares the card's id.

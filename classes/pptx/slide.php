@@ -59,6 +59,18 @@ class slide {
     /** @var theme|null Lazily-loaded scheme-colour resolver for this slide. */
     private ?theme $theme = null;
 
+    /**
+     * @var array<string,array<int,int>>|null Master default font sizes, lazily traced:
+     *      placeholder category (title|body|other) => outline level => size in 1/100 pt.
+     */
+    private ?array $textstyles = null;
+
+    /** @var \DOMXPath|null Cached XPath over this slide's layout part (null once tried and absent). */
+    private ?\DOMXPath $layoutxpath = null;
+
+    /** @var bool Whether the layout has been resolved, so an absent layout is not retried. */
+    private bool $layouttried = false;
+
     /** @var shape[] Vector diagram shapes collected from this slide. */
     private array $vectors = [];
 
@@ -337,6 +349,7 @@ class slide {
         $picblock = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
         $picblock->cy = $cy;
         $picblock->cx = $cx;
+        $picblock->widthpct = $this->width_percent($cx);
         $out[] = $picblock;
         $this->note_photo($pic, $xpath, $tf);
     }
@@ -399,7 +412,7 @@ class slide {
             }
             return;
         }
-        $paras = $this->paragraphs($sp, $xpath);
+        $paras = $this->paragraphs($sp, $xpath, $this->text_category($sp, $xpath));
         if (empty($paras)) {
             // A drawn but text-free shape (an arrow, a plain box) is only useful as
             // part of a reconstructed diagram; keep it as a vector, never as text.
@@ -490,6 +503,7 @@ class slide {
         $fill = new block(block::TYPE_IMAGE, $y, $x, $this->rels[$rid]);
         $fill->cy = $cy;
         $fill->cx = $cx;
+        $fill->widthpct = $this->width_percent($cx);
         $out[] = $fill;
         // A large picture stored as a shape fill (rather than a <p:pic>) still
         // makes the slide photo-led, which suppresses diagram reconstruction.
@@ -869,12 +883,38 @@ class slide {
      *
      * @param \DOMElement $sp The shape element containing a txBody.
      * @param \DOMXPath $xpath Namespaced XPath.
+     * @param string $category Placeholder category ("body"|"other") for master size lookup.
      * @return array[] Entries of ['text'=>string, 'level'=>int, 'nobullet'=>bool].
      */
-    private function paragraphs(\DOMElement $sp, \DOMXPath $xpath): array {
+    private function paragraphs(\DOMElement $sp, \DOMXPath $xpath, string $category = 'other'): array {
         $out = [];
         $liststyle = $this->list_style_bullets($sp, $xpath);
+        $listsizes = $this->list_style_sizes($sp, $xpath);
+        $layoutsizes = $this->layout_sizes($sp, $xpath);
+        $mastersizes = $this->master_text_styles()[$category] ?? [];
+        // PowerPoint may shrink overflowing text with a body autofit scale; apply
+        // it so the imported size matches what the slide actually showed.
+        $autofit = $this->autofit_scale($sp, $xpath);
         foreach ($xpath->query('.//a:p', $sp) as $p) {
+            $ppr = $xpath->query('a:pPr', $p)->item(0);
+            $level = 0;
+            $nobullet = null;
+            $paradefault = 0;
+            if ($ppr instanceof \DOMElement) {
+                // DrawingML outlines allow levels 0-8; clamp so a crafted lvl (the
+                // uploaded XML is not schema-validated) cannot drive deep nesting.
+                $level = min(self::MAX_LIST_LEVEL, max(0, (int) $ppr->getAttribute('lvl')));
+                $nobullet = self::bullet_state($ppr, $xpath);
+                $pdef = $xpath->query('a:defRPr', $ppr)->item(0);
+                if ($pdef instanceof \DOMElement && $pdef->getAttribute('sz') !== '') {
+                    $paradefault = (int) $pdef->getAttribute('sz');
+                }
+            }
+            // Size for a run that carries none of its own, most specific first:
+            // the paragraph default, then the shape's list style, then the layout
+            // placeholder's style, then the slide master's style for this level.
+            $fallback = $paradefault
+                ?: ($listsizes[$level] ?? ($layoutsizes[$level] ?? ($mastersizes[$level] ?? 0)));
             $buf = '';
             foreach ($p->childNodes as $node) {
                 if (!$node instanceof \DOMElement || $node->namespaceURI !== package::NS_A) {
@@ -892,21 +932,24 @@ class slide {
                     if ($rpr instanceof \DOMElement && $rpr->getAttribute('b') === '1') {
                         $text = '<strong>' . $text . '</strong>';
                     }
+                    // Preserve the run's on-slide size so body text that is large
+                    // beside an image is not flattened to the reader default. An
+                    // explicit run size wins; otherwise inherit the paragraph,
+                    // shape or master default resolved above.
+                    $runsize = $rpr instanceof \DOMElement && $rpr->getAttribute('sz') !== ''
+                        ? (int) $rpr->getAttribute('sz') : $fallback;
+                    if ($runsize > 0 && $autofit !== 1.0) {
+                        $runsize = (int) round($runsize * $autofit);
+                    }
+                    if ($runsize > 0) {
+                        $text = '<span style="font-size:' . self::points($runsize) . 'pt;">' . $text . '</span>';
+                    }
                     $buf .= $text;
                 }
             }
             $line = trim($buf);
             if ($line === '') {
                 continue;
-            }
-            $ppr = $xpath->query('a:pPr', $p)->item(0);
-            $level = 0;
-            $nobullet = null;
-            if ($ppr instanceof \DOMElement) {
-                // DrawingML outlines allow levels 0-8; clamp so a crafted lvl (the
-                // uploaded XML is not schema-validated) cannot drive deep nesting.
-                $level = min(self::MAX_LIST_LEVEL, max(0, (int) $ppr->getAttribute('lvl')));
-                $nobullet = self::bullet_state($ppr, $xpath);
             }
             if ($nobullet === null) {
                 // The paragraph itself is silent about bullets: fall back to the
@@ -918,6 +961,211 @@ class slide {
             $out[] = ['text' => $line, 'level' => $level, 'nobullet' => $nobullet];
         }
         return $out;
+    }
+
+    /**
+     * Classifies a text shape for master-style size lookup.
+     *
+     * The title placeholder is handled before this runs, so a placeholder here is
+     * a body-family one (body, subTitle, object) and maps to the master's body
+     * style; a shape with no placeholder is a free text box and maps to "other".
+     *
+     * @param \DOMElement $sp The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return string "body" or "other".
+     */
+    private function text_category(\DOMElement $sp, \DOMXPath $xpath): string {
+        $ph = $xpath->query('./p:nvSpPr/p:nvPr/p:ph', $sp)->item(0);
+        return $ph instanceof \DOMElement ? 'body' : 'other';
+    }
+
+    /**
+     * Per-level default font sizes declared by a shape's own txBody list style.
+     *
+     * @param \DOMElement $sp The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return array<int,int> Outline level (0-based) => size in 1/100 pt.
+     */
+    private function list_style_sizes(\DOMElement $sp, \DOMXPath $xpath): array {
+        $sizes = [];
+        $lststyle = $xpath->query('./p:txBody/a:lstStyle', $sp)->item(0);
+        if (!$lststyle instanceof \DOMElement) {
+            return $sizes;
+        }
+        foreach ($lststyle->childNodes as $child) {
+            if (!$child instanceof \DOMElement || $child->namespaceURI !== package::NS_A) {
+                continue;
+            }
+            if (!preg_match('/^lvl([1-9])pPr$/', $child->localName, $m)) {
+                continue;
+            }
+            $def = $xpath->query('a:defRPr', $child)->item(0);
+            $sz = $def instanceof \DOMElement ? (int) $def->getAttribute('sz') : 0;
+            if ($sz > 0) {
+                $sizes[(int) $m[1] - 1] = $sz;
+            }
+        }
+        return $sizes;
+    }
+
+    /**
+     * Namespaced XPath over this slide's layout part, loaded once and cached.
+     *
+     * @return \DOMXPath|null The layout XPath, or null when no layout is reachable.
+     */
+    private function layout_xpath(): ?\DOMXPath {
+        if (!$this->layouttried) {
+            $this->layouttried = true;
+            $path = $this->rel_match($this->path, '#slideLayout\d+\.xml$#');
+            $doc = $path === null ? null : $this->package->get_xml($path);
+            $this->layoutxpath = $doc instanceof \DOMDocument ? package::xpath($doc) : null;
+        }
+        return $this->layoutxpath;
+    }
+
+    /**
+     * Per-level default font sizes from the shape's matching layout placeholder.
+     *
+     * A slide placeholder inherits typography from the placeholder with the same
+     * type and index in its layout, which sits between the shape's own list style
+     * and the master's generic txStyles in the inheritance chain.
+     *
+     * @param \DOMElement $sp The slide shape element.
+     * @param \DOMXPath $xpath Namespaced XPath over the slide.
+     * @return array<int,int> Outline level (0-based) => size in 1/100 pt.
+     */
+    private function layout_sizes(\DOMElement $sp, \DOMXPath $xpath): array {
+        $ph = $xpath->query('./p:nvSpPr/p:nvPr/p:ph', $sp)->item(0);
+        $lx = $this->layout_xpath();
+        if (!$ph instanceof \DOMElement || $lx === null) {
+            return [];
+        }
+        $type = $ph->getAttribute('type');
+        $idx = $ph->getAttribute('idx');
+        foreach ($lx->query('//p:sp') as $lsp) {
+            $lph = $lx->query('./p:nvSpPr/p:nvPr/p:ph', $lsp)->item(0);
+            if (
+                $lph instanceof \DOMElement
+                    && $lph->getAttribute('type') === $type
+                    && $lph->getAttribute('idx') === $idx
+            ) {
+                return $this->list_style_sizes($lsp, $lx);
+            }
+        }
+        return [];
+    }
+
+    /**
+     * The autofit font scale PowerPoint applied to shrink overflowing body text.
+     *
+     * @param \DOMElement $sp The shape element.
+     * @param \DOMXPath $xpath Namespaced XPath.
+     * @return float The scale factor (1.0 when the shape does not shrink its text).
+     */
+    private function autofit_scale(\DOMElement $sp, \DOMXPath $xpath): float {
+        $fit = $xpath->query('./p:txBody/a:bodyPr/a:normAutofit', $sp)->item(0);
+        if (!$fit instanceof \DOMElement || $fit->getAttribute('fontScale') === '') {
+            return 1.0;
+        }
+        // The fontScale is a percentage in 1/1000 of a percent (100000 means 100%).
+        $scale = (int) $fit->getAttribute('fontScale');
+        return $scale > 0 ? $scale / 100000 : 1.0;
+    }
+
+    /**
+     * Master default font sizes by placeholder category and outline level.
+     *
+     * PowerPoint templates keep the default point size for each placeholder kind
+     * and indent level in the slide master's txStyles, which is where a run's size
+     * comes from when the run, its paragraph and its shape all leave it unset.
+     * Traced once per slide and cached; an empty map when no master is reachable.
+     *
+     * @return array<string,array<int,int>> Category (title|body|other) => level => size in 1/100 pt.
+     */
+    private function master_text_styles(): array {
+        if ($this->textstyles !== null) {
+            return $this->textstyles;
+        }
+        $styles = ['title' => [], 'body' => [], 'other' => []];
+        $master = $this->trace_master();
+        $doc = $master === null ? null : $this->package->get_xml($master);
+        if ($doc instanceof \DOMDocument) {
+            $mx = package::xpath($doc);
+            foreach (['titleStyle' => 'title', 'bodyStyle' => 'body', 'otherStyle' => 'other'] as $node => $cat) {
+                $style = $mx->query('/p:sldMaster/p:txStyles/p:' . $node)->item(0);
+                if (!$style instanceof \DOMElement) {
+                    continue;
+                }
+                foreach ($style->childNodes as $lvl) {
+                    if (!$lvl instanceof \DOMElement || $lvl->namespaceURI !== package::NS_A) {
+                        continue;
+                    }
+                    if (!preg_match('/^lvl([1-9])pPr$/', $lvl->localName, $m)) {
+                        continue;
+                    }
+                    $def = $mx->query('a:defRPr', $lvl)->item(0);
+                    $sz = $def instanceof \DOMElement ? (int) $def->getAttribute('sz') : 0;
+                    if ($sz > 0) {
+                        $styles[$cat][(int) $m[1] - 1] = $sz;
+                    }
+                }
+            }
+        }
+        $this->textstyles = $styles;
+        return $this->textstyles;
+    }
+
+    /**
+     * Follows the slide -> layout -> master relationship chain to the master part.
+     *
+     * @return string|null The master's zip path, or null when the chain breaks.
+     */
+    private function trace_master(): ?string {
+        $layout = $this->rel_match($this->path, '#slideLayout\d+\.xml$#');
+        if ($layout === null) {
+            return null;
+        }
+        return $this->rel_match($layout, '#slideMaster\d+\.xml$#');
+    }
+
+    /**
+     * First relationship target of a part whose resolved path matches a pattern.
+     *
+     * @param string $partpath Zip path whose rels are searched.
+     * @param string $pattern Regex the target must match.
+     * @return string|null The matching target path, or null when none matches.
+     */
+    private function rel_match(string $partpath, string $pattern): ?string {
+        foreach ($this->package->get_rels($partpath) as $target) {
+            if (preg_match($pattern, $target)) {
+                return $target;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * A width in EMU as a percent of the slide width.
+     *
+     * @param int $cx Width in EMU.
+     * @return int Percent in 1-100, or 0 when the width or slide width is unknown.
+     */
+    private function width_percent(int $cx): int {
+        $slidewidth = $this->package->slide_width();
+        if ($cx <= 0 || $slidewidth <= 0) {
+            return 0;
+        }
+        return min(100, max(1, (int) round($cx / $slidewidth * 100)));
+    }
+
+    /**
+     * Formats a DrawingML font size (1/100 pt) as a trimmed point value.
+     *
+     * @param int $sz Size in hundredths of a point.
+     * @return string The size in points, e.g. "28" or "13.5".
+     */
+    private static function points(int $sz): string {
+        return rtrim(rtrim(number_format($sz / 100, 2, '.', ''), '0'), '.');
     }
 
     /**

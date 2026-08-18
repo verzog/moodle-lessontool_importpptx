@@ -41,6 +41,9 @@ class html_builder {
     /** @var int Minimum horizontal gap (EMU, ~1 inch) between blocks for a genuine column split. */
     const COLUMN_GAP_EMU = 914400;
 
+    /** @var int A lone image at least this wide on the slide (percent) is rendered to fill that width. */
+    const FILL_WIDTH_PERCENT = 60;
+
     /** @var string Fallback plate colour when a slide's own fill cannot be read. */
     private string $defaultcolour;
 
@@ -216,7 +219,7 @@ class html_builder {
                     $parts[] = $this->render_card_group($imgs, null);
                 } else {
                     $parts[] = count($imgs) === 1
-                        ? $this->render_figure($imgs[0])
+                        ? $this->render_figure($imgs[0], $band[0]->widthpct)
                         : $this->render_grid($imgs, null);
                 }
                 $b = $b2;
@@ -480,7 +483,7 @@ class html_builder {
      */
     private function render_block(block $b): string {
         if ($b->type === block::TYPE_IMAGE) {
-            return $this->render_figure($this->register_image($b->content));
+            return $this->render_figure($this->register_image($b->content), $b->widthpct);
         }
         return $this->render_cell($b);
     }
@@ -579,13 +582,20 @@ class html_builder {
     }
 
     /**
-     * Renders a lone image as a centred, size-capped figure.
+     * Renders a lone image as a centred figure, filling the width it had on the
+     * slide when it was a full-bleed graphic and otherwise keeping its own size.
      *
      * @param string $ref The image @@PLUGINFILE@@ reference.
+     * @param int $widthpct The image's on-slide width as a percent of the slide (0 when unknown).
      * @return string The figure HTML.
      */
-    private function render_figure(string $ref): string {
-        return '<div class="local-lessonimportpptx-figure"><img src="' . $ref . '" alt="" class="img-fluid"></div>';
+    private function render_figure(string $ref, int $widthpct = 0): string {
+        // A picture that spanned most of the slide is a full-bleed graphic (a title
+        // or break slide); render it at the width it had on the slide so it fills
+        // the page instead of sitting small beside empty space. Smaller pictures
+        // keep their natural size, capped by the figure's own CSS.
+        $style = $widthpct >= self::FILL_WIDTH_PERCENT ? ' style="width:' . $widthpct . '%"' : '';
+        return '<div class="local-lessonimportpptx-figure"><img src="' . $ref . '" alt="" class="img-fluid"' . $style . '></div>';
     }
 
     /**
