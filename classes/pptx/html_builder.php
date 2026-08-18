@@ -237,6 +237,9 @@ class html_builder {
      * @return array[] A list of bands, each a left-to-right block[].
      */
     private function into_bands(array $blocks): array {
+        if ($this->heights_known($blocks)) {
+            return $this->into_rows_by_overlap($blocks);
+        }
         $bands = [];
         $current = [];
         $lastband = null;
@@ -253,6 +256,95 @@ class html_builder {
             $bands[] = $current;
         }
         return $bands;
+    }
+
+    /**
+     * Whether every block carries a positive height, enabling overlap grouping.
+     *
+     * @param block[] $blocks The blocks to test.
+     * @return bool True if the list is non-empty and all heights are known.
+     */
+    private function heights_known(array $blocks): bool {
+        foreach ($blocks as $b) {
+            if ($b->cy <= 0) {
+                return false;
+            }
+        }
+        return $blocks !== [];
+    }
+
+    /**
+     * Groups blocks into rows by vertical overlap, each row left-to-right by x.
+     *
+     * Processing top-to-bottom, a block joins the open row when it overlaps that
+     * row's vertical span by at least half of the shorter extent; otherwise it
+     * starts a new row. A block beside a tall image thus shares its row, while a
+     * block genuinely below it starts a fresh one.
+     *
+     * @param block[] $blocks The blocks to group.
+     * @return array[] A list of rows, each a left-to-right block[].
+     */
+    private function into_rows_by_overlap(array $blocks): array {
+        $sorted = $blocks;
+        usort($sorted, static function (block $a, block $b): int {
+            return [$a->y, $a->x] <=> [$b->y, $b->x];
+        });
+        $rows = [];
+        $current = [];
+        $top = 0;
+        $bot = 0;
+        foreach ($sorted as $b) {
+            $btop = $b->y;
+            $bbot = $b->y + $b->cy;
+            if ($current === []) {
+                $current = [$b];
+                $top = $btop;
+                $bot = $bbot;
+                continue;
+            }
+            $overlap = min($bot, $bbot) - max($top, $btop);
+            $shorter = max(1, min($bbot - $btop, $bot - $top));
+            if ($overlap * 2 >= $shorter) {
+                $current[] = $b;
+                $top = min($top, $btop);
+                $bot = max($bot, $bbot);
+            } else {
+                $rows[] = $this->sort_by_x($current);
+                $current = [$b];
+                $top = $btop;
+                $bot = $bbot;
+            }
+        }
+        if ($current !== []) {
+            $rows[] = $this->sort_by_x($current);
+        }
+        return $rows;
+    }
+
+    /**
+     * Orders a row's blocks left-to-right by horizontal offset.
+     *
+     * @param block[] $row The row's blocks.
+     * @return block[] The blocks sorted by x.
+     */
+    private function sort_by_x(array $row): array {
+        usort($row, static function (block $a, block $b): int {
+            return $a->x <=> $b->x;
+        });
+        return $row;
+    }
+
+    /**
+     * Orders blocks top-to-bottom by vertical offset (stable on ties).
+     *
+     * @param block[] $blocks The blocks.
+     * @return block[] The blocks sorted by y.
+     */
+    private function sort_by_y(array $blocks): array {
+        usort($blocks, static function (block $a, block $b): int {
+            return $a->y <=> $b->y;
+        });
+        return $blocks;
     }
 
     /**
@@ -306,10 +398,11 @@ class html_builder {
      */
     private function render_columns(array $band): string {
         $columns = $this->cluster_by_x($band);
-        // One horizontal group, or too many to sit side by side cleanly: just stack.
+        // One horizontal group, or too many to sit side by side cleanly: just
+        // stack in reading order (top-to-bottom).
         if (count($columns) < 2 || count($columns) > 4) {
             $stack = '';
-            foreach ($band as $b) {
+            foreach ($this->sort_by_y($band) as $b) {
                 $stack .= $this->render_block($b);
             }
             return $stack;
@@ -318,7 +411,10 @@ class html_builder {
         $cells = '';
         foreach ($columns as $group) {
             $inner = '';
-            foreach ($group as $b) {
+            // Within a column, keep the slide's top-to-bottom order: the row was
+            // sorted left-to-right for clustering, which can reorder stacked
+            // blocks that share a column.
+            foreach ($this->sort_by_y($group) as $b) {
                 $inner .= $this->render_cell($b);
             }
             $cells .= '<div class="' . $col . '">' . $inner . '</div>';
@@ -336,14 +432,20 @@ class html_builder {
     private function cluster_by_x(array $band): array {
         $clusters = [];
         $current = [];
-        $lastx = null;
+        $right = null;
         foreach ($band as $b) {
-            if ($lastx !== null && $b->x - $lastx > self::COLUMN_GAP_EMU && $current !== []) {
+            // Start a new column only when this block begins to the right of the
+            // whole current column — a genuine horizontal split. A block whose
+            // span overlaps the column (e.g. a caption laid over a background
+            // picture at a different x) stays in it and is stacked, not columned.
+            if ($right !== null && $b->x >= $right && $current !== []) {
                 $clusters[] = $current;
                 $current = [];
+                $right = null;
             }
             $current[] = $b;
-            $lastx = $b->x;
+            $edge = $b->cx > 0 ? $b->x + $b->cx : $b->x + self::COLUMN_GAP_EMU;
+            $right = $right === null ? $edge : max($right, $edge);
         }
         if ($current !== []) {
             $clusters[] = $current;
