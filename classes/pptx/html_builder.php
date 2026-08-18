@@ -438,7 +438,7 @@ class html_builder {
             // whole current column — a genuine horizontal split. A block whose
             // span overlaps the column (e.g. a caption laid over a background
             // picture at a different x) stays in it and is stacked, not columned.
-            if ($right !== null && $b->x > $right && $current !== []) {
+            if ($right !== null && $b->x >= $right && $current !== []) {
                 $clusters[] = $current;
                 $current = [];
                 $right = null;

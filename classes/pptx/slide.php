@@ -778,24 +778,18 @@ class slide {
      * @return array A [height, width] pair in EMU, or [0, 0] when no extent is present.
      */
     private function extent(\DOMElement $el, \DOMXPath $xpath, ?array $tf = null): array {
-        $ext = $xpath->query('.//a:ext', $el)->item(0);
+        // Anchor on the transform's own extent (the a:ext beside a:off in the
+        // shape's xfrm), not the first descendant a:ext: a blip extension list
+        // — e.g. an SVG-backed image — also carries an a:ext, without cx/cy.
+        // (A shape rotated off-axis is approximated by its unrotated box.)
+        $off = $xpath->query('.//a:off', $el)->item(0);
+        $ext = $off instanceof \DOMElement ? $xpath->query('parent::*/a:ext', $off)->item(0) : null;
         if ($ext instanceof \DOMElement && $ext->getAttribute('cx') !== '') {
             $cx = (int) $ext->getAttribute('cx');
             $cy = (int) $ext->getAttribute('cy');
             if ($tf !== null) {
                 $cx = (int) round($cx * $tf['sx']);
                 $cy = (int) round($cy * $tf['sy']);
-            }
-            // A quarter-turn rotation swaps a shape's footprint on the slide, so
-            // its vertical extent becomes the unrotated width. rot is in 60000ths
-            // of a degree; treat rotations nearer a quarter-turn than to level as
-            // a swap so the overlap grouper sees the true on-slide height.
-            $xfrm = $ext->parentNode;
-            if ($xfrm instanceof \DOMElement && $xfrm->getAttribute('rot') !== '') {
-                $deg = (int) round(abs((int) $xfrm->getAttribute('rot')) / 60000) % 180;
-                if ($deg >= 45 && $deg < 135) {
-                    [$cx, $cy] = [$cy, $cx];
-                }
             }
             return [$cy, $cx];
         }
