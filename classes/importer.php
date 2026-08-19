@@ -294,6 +294,38 @@ class importer {
             }
         } while ($removed);
 
+        // A card group thinned to a single uncaptioned image is no longer a group:
+        // rebuild it as the centred, height-capped figure a lone image uses (and
+        // drop the now-triggerless zoom modal) so it does not keep the half-width,
+        // uncapped one-card layout.
+        foreach (iterator_to_array($xpath->query('//*[' . $has('local-lessonimportpptx-cardgroup') . ']')) as $group) {
+            if ($xpath->query('.//*[' . $has('local-lessonimportpptx-card') . ']', $group)->length !== 1) {
+                continue;
+            }
+            $img = $xpath->query('.//img', $group)->item(0);
+            $caption = $xpath->query('.//*[' . $has('card-body') . ']', $group)->item(0);
+            if (!$img instanceof \DOMElement || $caption !== null) {
+                continue;
+            }
+            $figure = $doc->createElement('div');
+            $figure->setAttribute('class', 'local-lessonimportpptx-figure');
+            $figimg = $doc->createElement('img');
+            $figimg->setAttribute('src', $img->getAttribute('src'));
+            $figimg->setAttribute('alt', '');
+            $figimg->setAttribute('class', 'img-fluid');
+            $figure->appendChild($figimg);
+            $trigger = $xpath->query('.//a[@data-bs-target]', $group)->item(0);
+            $group->parentNode->replaceChild($figure, $group);
+            if ($trigger instanceof \DOMElement) {
+                $target = ltrim($trigger->getAttribute('data-bs-target'), '#');
+                foreach ($target === '' ? [] : iterator_to_array($xpath->query('//*[@id="' . $target . '"]')) as $modal) {
+                    if ($modal->parentNode !== null) {
+                        $modal->parentNode->removeChild($modal);
+                    }
+                }
+            }
+        }
+
         $body = $doc->getElementsByTagName('body')->item(0);
         if ($body === null) {
             return $html;

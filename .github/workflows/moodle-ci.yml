@@ -96,9 +96,12 @@ jobs:
 
       - name: Install poppler-utils (PDF backend)
         # poppler powers the PDF-import path; the behat suite also relies on it so
-        # the form advertises PDF support. The flaky part is `apt-get update`
-        # stalling on archive.ubuntu.com, so install straight from the runner's
-        # warm apt cache first and only refresh the index as a fallback.
+        # the form advertises PDF support. Install straight from the runner's warm
+        # apt cache first, refreshing the index only as a fallback. dpkg is never
+        # wrapped in a hard timeout: a slow mirror once let SIGKILL land mid-
+        # configure, leaving dpkg "interrupted" so every retry failed. The step's
+        # own timeout-minutes caps a genuine hang; each attempt first repairs any
+        # half-configured state left by a previous one.
         timeout-minutes: 8
         run: |
           if command -v pdfinfo >/dev/null 2>&1 && command -v pdftoppm >/dev/null 2>&1; then
@@ -106,15 +109,16 @@ jobs:
             exit 0
           fi
           for attempt in 1 2 3; do
-            if timeout --kill-after=30 120 sudo apt-get install -y --no-install-recommends poppler-utils; then
+            sudo dpkg --configure -a || true
+            if sudo apt-get install -y --no-install-recommends poppler-utils; then
               exit 0
             fi
             echo "cache install attempt ${attempt} failed; refreshing the apt index"
-            timeout --kill-after=30 120 sudo apt-get update || true
-            if timeout --kill-after=30 120 sudo apt-get install -y --no-install-recommends poppler-utils; then
+            sudo apt-get update || true
+            if sudo apt-get install -y --no-install-recommends poppler-utils; then
               exit 0
             fi
-            echo "poppler-utils install attempt ${attempt} failed or timed out; retrying in 15s"
+            echo "poppler-utils install attempt ${attempt} failed; retrying in 15s"
             sleep 15
           done
           echo "poppler-utils install failed after 3 attempts" >&2
