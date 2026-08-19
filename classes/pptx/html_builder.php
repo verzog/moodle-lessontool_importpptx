@@ -164,20 +164,20 @@ class html_builder {
         }));
 
         $colour = self::safe_colour($parsed->section->colour ?? '', $this->defaultcolour);
-        $lede = $this->render_items($lead);
+        // The lede text and the section illustration share one column so the
+        // coloured plate beside them spans the full height of the text and image
+        // together, not just the height of the text. Bootstrap grid: the plate in
+        // a narrow col-md-3, the lede-and-media in col-md-9, stacking on phones.
+        $content = $this->render_items($lead) . $this->render_items($media);
         if (!empty($lines)) {
-            // Bootstrap grid: the coloured label plate in a narrow col-3 beside the
-            // lede text in col-9, so the two sit cleanly side by side and the plate
-            // fills the row height instead of floating as a fixed-width box.
             $plate = '<div class="col-12 col-md-3"><div class="local-lessonimportpptx-plate" style="background-color:'
                 . $colour . ';">' . implode('<br>', $lines) . '</div></div>';
             $hero = '<div class="container-fluid local-lessonimportpptx-section"><div class="row">'
-                . $plate . '<div class="col-12 col-md-9 local-lessonimportpptx-lede">' . $lede . '</div></div></div>';
+                . $plate . '<div class="col-12 col-md-9 local-lessonimportpptx-lede">' . $content . '</div></div></div>';
         } else {
-            $hero = '<div class="local-lessonimportpptx-lede">' . $lede . '</div>';
+            $hero = '<div class="local-lessonimportpptx-lede">' . $content . '</div>';
         }
-        $mediahtml = $this->render_items($media);
-        $html = trim($hero . ($mediahtml !== '' ? "\n" . $mediahtml : ''));
+        $html = trim($hero);
 
         return (object) [
             'title' => $title,
