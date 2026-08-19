@@ -71,6 +71,8 @@ class import_task extends \core\task\adhoc_task {
             'sectioncolour' => (string) ($data->sectioncolour ?? '#442980'),
             'importmode' => (string) ($data->importmode ?? 'editable'),
             'cardgroup' => !empty($data->cardgroup),
+            'bodysize' => (int) ($data->bodysize ?? 0),
+            'adjacentsize' => (int) ($data->adjacentsize ?? 0),
         ];
 
         // Do not delete the staged upload in a finally: if the import throws on a

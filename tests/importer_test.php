@@ -301,6 +301,79 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * The body-text size selector forces its point size on ordinary body text,
+     * overriding (and dropping) the size the slide carried.
+     */
+    public function test_body_font_size_override(): void {
+        $builder = new html_builder('#442980', false, 16, 0);
+        $block = new block(block::TYPE_TEXT, 0, 0, ['<span style="font-size:28pt;">A body line long enough to stay body.</span>']);
+        $block->levels = [0];
+        $block->nobullets = [true];
+        $parsed = (object) ['title' => 'Page', 'section' => null, 'blocks' => [$block]];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('font-size:16pt', $out->html);
+        $this->assertStringNotContainsString('font-size:28pt', $out->html);
+    }
+
+    /**
+     * The override strips only the parser's own font-size spans, so slide text
+     * that literally reads like a CSS size declaration is left untouched.
+     */
+    public function test_size_override_preserves_literal_size_text(): void {
+        $builder = new html_builder('#442980', false, 16, 0);
+        $block = new block(block::TYPE_TEXT, 0, 0, ['<span style="font-size:28pt;">Set font-size: 12pt; here.</span>']);
+        $block->levels = [0];
+        $block->nobullets = [true];
+        $parsed = (object) ['title' => 'Page', 'section' => null, 'blocks' => [$block]];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('Set font-size: 12pt; here.', $out->html);
+        $this->assertStringContainsString('font-size:16pt', $out->html);
+        $this->assertStringNotContainsString('font-size:28pt', $out->html);
+    }
+
+    /**
+     * The text-beside-image size selector forces its point size on text that
+     * shares a row with an image, independently of the body-text size.
+     */
+    public function test_adjacent_font_size_override(): void {
+        $builder = new html_builder('#442980', false, 0, 20);
+        $image = new block(block::TYPE_IMAGE, 0, 0, 'ppt/media/pic.png');
+        $image->cy = 3000000;
+        $image->cx = 3000000;
+        $text = new block(block::TYPE_TEXT, 0, 4000000, ['<span style="font-size:28pt;">Text beside the image.</span>']);
+        $text->levels = [0];
+        $text->nobullets = [true];
+        $text->cy = 3000000;
+        $text->cx = 3000000;
+        $parsed = (object) ['title' => 'Page', 'section' => null, 'blocks' => [$image, $text]];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringContainsString('font-size:20pt', $out->html);
+        $this->assertStringNotContainsString('font-size:28pt', $out->html);
+    }
+
+    /**
+     * Text overlaid on an image (a single cluster, stacked rather than columned)
+     * is body text, not beside-image, so it takes the body size not the adjacent.
+     */
+    public function test_overlaid_text_uses_body_size(): void {
+        $builder = new html_builder('#442980', false, 16, 20);
+        $image = new block(block::TYPE_IMAGE, 0, 0, 'ppt/media/bg.png');
+        $image->cy = 4000000;
+        $image->cx = 6000000;
+        $text = new block(block::TYPE_TEXT, 500000, 500000, ['<span style="font-size:28pt;">Overlaid caption text.</span>']);
+        $text->levels = [0];
+        $text->nobullets = [true];
+        $text->cy = 1000000;
+        $text->cx = 3000000;
+        $parsed = (object) ['title' => 'Page', 'section' => null, 'blocks' => [$image, $text]];
+        $out = $builder->build($parsed);
+        $this->assertStringNotContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringContainsString('font-size:16pt', $out->html);
+        $this->assertStringNotContainsString('font-size:20pt', $out->html);
+    }
+
+    /**
      * With the card-group option on, a captioned image row becomes a Bootstrap
      * card group: each picture is a card whose caption is the card text and whose
      * click-to-enlarge zoom modal shares the card's id.

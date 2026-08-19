@@ -88,6 +88,8 @@ if (optional_param('confirm', 0, PARAM_BOOL) && confirm_sesskey()) {
         'sectioncolour' => optional_param('sectioncolour', '#442980', PARAM_TEXT),
         'importmode' => optional_param('importmode', 'editable', PARAM_ALPHA),
         'cardgroup' => optional_param('cardgroup', 0, PARAM_BOOL),
+        'bodysize' => optional_param('bodysize', 0, PARAM_INT),
+        'adjacentsize' => optional_param('adjacentsize', 0, PARAM_INT),
     ];
     $result = local_lessonimportpptx_process($file, $lesson, $context, $cm, $pendingid, $options);
     if ($result->queued) {
@@ -146,6 +148,8 @@ if ($data = $mform->get_data()) {
         'sectioncolour' => (string) $data->sectioncolour,
         'importmode' => (string) ($data->importmode ?? 'editable'),
         'cardgroup' => (int) !empty($data->cardgroup),
+        'bodysize' => (int) ($data->bodysize ?? 0),
+        'adjacentsize' => (int) ($data->adjacentsize ?? 0),
     ]);
     $cancelurl = new moodle_url($PAGE->url, ['id' => $cm->id, 'cancelpending' => $pendingid]);
     echo $OUTPUT->header();

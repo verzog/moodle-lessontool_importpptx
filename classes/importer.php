@@ -51,6 +51,12 @@ class importer {
     /** @var bool Whether plain image runs are rendered as Bootstrap card groups. */
     private bool $cardgroup;
 
+    /** @var int Point size forced on body text (0 keeps the slide's own sizes). */
+    private int $bodysize;
+
+    /** @var int Point size forced on text beside an image (0 keeps the slide's own sizes). */
+    private int $adjacentsize;
+
     /**
      * Constructor.
      *
@@ -66,6 +72,8 @@ class importer {
         $this->sectioncolour = $colour === '' ? '#442980' : $colour;
         $this->imagemaxdim = (int) ($options['imagemaxdim'] ?? 1600);
         $this->cardgroup = !empty($options['cardgroup']);
+        $this->bodysize = max(0, (int) ($options['bodysize'] ?? 0));
+        $this->adjacentsize = max(0, (int) ($options['adjacentsize'] ?? 0));
     }
 
     /**
@@ -103,7 +111,7 @@ class importer {
         try {
             $path = self::stage($pptx);
             $package = new package($path);
-            $builder = new html_builder($this->sectioncolour, $this->cardgroup);
+            $builder = new html_builder($this->sectioncolour, $this->cardgroup, $this->bodysize, $this->adjacentsize);
 
             try {
                 $slidepaths = $package->get_slide_paths();

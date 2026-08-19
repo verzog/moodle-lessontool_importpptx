@@ -53,6 +53,12 @@ class html_builder {
     /** @var array Map of page filename => source media path in the package. */
     private array $images = [];
 
+    /** @var int Point size forced on body text (0 keeps the slide's own sizes). */
+    private int $bodysize;
+
+    /** @var int Point size forced on text that sits beside an image (0 keeps the slide's own sizes). */
+    private int $adjacentsize;
+
     /**
      * Constructor.
      *
@@ -60,10 +66,14 @@ class html_builder {
      * @param bool $cardgroup When true, plain image runs render as a Bootstrap
      *                        card group (matching the tiny_bootstrap plugin)
      *                        instead of a plain figure or image grid.
+     * @param int $bodysize Point size to force on body text, or 0 to keep the slide's sizes.
+     * @param int $adjacentsize Point size to force on text beside an image, or 0 to keep the slide's sizes.
      */
-    public function __construct(string $defaultcolour, bool $cardgroup = false) {
+    public function __construct(string $defaultcolour, bool $cardgroup = false, int $bodysize = 0, int $adjacentsize = 0) {
         $this->defaultcolour = self::safe_colour($defaultcolour, '#442980');
         $this->cardgroup = $cardgroup;
+        $this->bodysize = max(0, $bodysize);
+        $this->adjacentsize = max(0, $adjacentsize);
     }
 
     /**
@@ -195,7 +205,13 @@ class html_builder {
             $band = $bands[$b];
 
             // A row of short lines directly above an equal row of images: captions.
+            // Captions are body text (not beside an image), so honour the body size.
             $caps = $this->caption_texts($band);
+            if ($caps !== null) {
+                $caps = array_map(function (string $c): string {
+                    return $this->sized($c, $this->bodysize);
+                }, $caps);
+            }
             if ($caps !== null && $b + 1 < $count) {
                 $next = $this->image_refs($bands[$b + 1]);
                 if ($next !== null && count($next) === count($caps)) {
@@ -227,7 +243,9 @@ class html_builder {
             }
 
             // A single block fills the width; several side by side become columns.
-            $parts[] = count($band) === 1 ? $this->render_block($band[0]) : $this->render_columns($band);
+            $parts[] = count($band) === 1
+                ? $this->render_block($band[0], $this->bodysize)
+                : $this->render_columns($band);
             $b++;
         }
         return implode("\n", $parts);
@@ -401,12 +419,17 @@ class html_builder {
      */
     private function render_columns(array $band): string {
         $columns = $this->cluster_by_x($band);
+        $columned = count($columns) >= 2 && count($columns) <= 4;
+        // Text counts as "beside an image" only when the row genuinely splits into
+        // columns that include an image. Text overlaid on or stacked with an image
+        // (a single cluster) is body text, not adjacent, so it takes the body size.
+        $textsize = ($columned && $this->band_has_image($band)) ? $this->adjacentsize : $this->bodysize;
         // One horizontal group, or too many to sit side by side cleanly: just
         // stack in reading order (top-to-bottom).
-        if (count($columns) < 2 || count($columns) > 4) {
+        if (!$columned) {
             $stack = '';
             foreach ($this->sort_by_y($band) as $b) {
-                $stack .= $this->render_block($b);
+                $stack .= $this->render_block($b, $textsize);
             }
             return $stack;
         }
@@ -418,11 +441,26 @@ class html_builder {
             // sorted left-to-right for clustering, which can reorder stacked
             // blocks that share a column.
             foreach ($this->sort_by_y($group) as $b) {
-                $inner .= $this->render_cell($b);
+                $inner .= $this->render_cell($b, $textsize);
             }
             $cells .= '<div class="' . $col . '">' . $inner . '</div>';
         }
         return '<div class="row g-3 mb-3 local-lessonimportpptx-cols">' . $cells . '</div>';
+    }
+
+    /**
+     * Whether a band contains an image block (marking its text as image-adjacent).
+     *
+     * @param block[] $band The band's blocks.
+     * @return bool True when at least one block is an image.
+     */
+    private function band_has_image(array $band): bool {
+        foreach ($band as $b) {
+            if ($b->type === block::TYPE_IMAGE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -460,9 +498,10 @@ class html_builder {
      * Renders a single block's inner HTML with no column or figure wrapper.
      *
      * @param block $b The block.
+     * @param int $textsize Point size to force on body text, or 0 to keep the slide's sizes.
      * @return string The inner HTML.
      */
-    private function render_cell(block $b): string {
+    private function render_cell(block $b, int $textsize = 0): string {
         if ($b->type === block::TYPE_IMAGE) {
             return '<img src="' . $this->register_image($b->content) . '" alt="" class="img-fluid">';
         }
@@ -470,7 +509,7 @@ class html_builder {
             return $b->content;
         }
         if ($b->type === block::TYPE_TEXT) {
-            return $this->text_html($b);
+            return $this->text_html($b, $textsize);
         }
         return '';
     }
@@ -479,13 +518,14 @@ class html_builder {
      * Renders one full-width block, constraining a lone image to a centred figure.
      *
      * @param block $b The block.
+     * @param int $textsize Point size to force on body text, or 0 to keep the slide's sizes.
      * @return string The HTML.
      */
-    private function render_block(block $b): string {
+    private function render_block(block $b, int $textsize = 0): string {
         if ($b->type === block::TYPE_IMAGE) {
             return $this->render_figure($this->register_image($b->content), $b->widthpct);
         }
-        return $this->render_cell($b);
+        return $this->render_cell($b, $textsize);
     }
 
     /**
@@ -496,9 +536,10 @@ class html_builder {
      * its heading-and-sub-point structure instead of flattening to one flat list.
      *
      * @param block $b The text block.
+     * @param int $textsize Point size to force on this text, or 0 to keep the slide's sizes.
      * @return string The rendered HTML.
      */
-    private function text_html(block $b): string {
+    private function text_html(block $b, int $textsize = 0): string {
         $paras = array_map(static function (string $p): string {
             return str_replace("\n", '<br>', $p);
         }, (array) $b->content);
@@ -507,7 +548,7 @@ class html_builder {
             return '';
         }
         if ($count === 1) {
-            return '<p>' . $paras[0] . '</p>';
+            return $this->sized('<p>' . $paras[0] . '</p>', $textsize);
         }
 
         $html = '';
@@ -531,7 +572,27 @@ class html_builder {
             }
             $i = $j;
         }
-        return $html;
+        return $this->sized($html, $textsize);
+    }
+
+    /**
+     * Forces a point size on a rendered text block, overriding the slide's own
+     * sizes: the parser's inline font-size values are dropped and the block is
+     * wrapped at the chosen size. Returns the html unchanged when size is 0.
+     *
+     * @param string $html The rendered text HTML.
+     * @param int $size The point size to force, or 0 to leave the html as-is.
+     * @return string The sized HTML.
+     */
+    private function sized(string $html, int $size): string {
+        if ($size <= 0) {
+            return $html;
+        }
+        // Unwrap only the font-size spans the parser itself generated, never
+        // arbitrary slide text that happens to read "font-size: ..pt", then wrap
+        // the whole block at the chosen size.
+        $html = preg_replace('#<span style="font-size:[0-9.]+pt;">(.*?)</span>#s', '$1', $html);
+        return '<div style="font-size:' . $size . 'pt;">' . $html . '</div>';
     }
 
     /**
