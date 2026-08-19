@@ -245,12 +245,15 @@ class html_builder {
                     $imgs = array_merge($imgs, $more);
                     $b2++;
                 }
-                if ($this->cardgroup) {
+                if (count($imgs) === 1) {
+                    // A lone image is a centred, height-capped figure — not a
+                    // one-item card group, which would sit at half width on desktop
+                    // and let a tall picture dominate the page.
+                    $parts[] = $this->render_figure($imgs[0], $band[0]->widthpct);
+                } else if ($this->cardgroup) {
                     $parts[] = $this->render_card_group($imgs, null);
                 } else {
-                    $parts[] = count($imgs) === 1
-                        ? $this->render_figure($imgs[0], $band[0]->widthpct)
-                        : $this->render_grid($imgs, null);
+                    $parts[] = $this->render_grid($imgs, null);
                 }
                 $b = $b2;
                 continue;

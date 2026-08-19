@@ -461,10 +461,11 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
-     * With the card-group option on, a lone image becomes a single-card group
-     * (no card body, since it has no caption) rather than a centred figure.
+     * A lone image is always a centred, height-capped figure — even with the
+     * card-group option on, a single image is not a group and must not render as
+     * a half-width one-item card that lets a tall picture dominate the page.
      */
-    public function test_single_image_becomes_card_when_enabled(): void {
+    public function test_single_image_stays_figure_when_card_group_enabled(): void {
         $builder = new html_builder('#442980', true);
         $parsed = (object) [
             'title' => 'One image',
@@ -474,11 +475,9 @@ final class importer_test extends \advanced_testcase {
             ],
         ];
         $out = $builder->build($parsed);
-        $this->assertStringContainsString('local-lessonimportpptx-cardgroup', $out->html);
-        $this->assertStringContainsString('local-lessonimportpptx-card', $out->html);
-        $this->assertStringNotContainsString('local-lessonimportpptx-figure', $out->html);
-        // No caption, so no card body.
-        $this->assertStringNotContainsString('card-body', $out->html);
+        $this->assertStringContainsString('local-lessonimportpptx-figure', $out->html);
+        $this->assertStringNotContainsString('local-lessonimportpptx-cardgroup', $out->html);
+        $this->assertStringNotContainsString('local-lessonimportpptx-card', $out->html);
         $this->assertCount(1, $out->images);
     }
 
