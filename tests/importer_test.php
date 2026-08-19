@@ -232,6 +232,22 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * With unknown widths the proportional-overlap rule would compare against a
+     * synthetic gap, so the fallback keeps the full one-inch offset threshold:
+     * two unsized blocks 0.75in apart stay in one cluster (stacked), not columns.
+     */
+    public function test_unknown_width_blocks_keep_gap_threshold(): void {
+        $builder = new html_builder('#442980');
+        $top = new block(block::TYPE_TEXT, 1500000, 500000, ['Upper unsized line.']);
+        $top->cy = 1500000;
+        $bottom = new block(block::TYPE_TEXT, 1600000, 1185600, ['Lower unsized line.']);
+        $bottom->cy = 1500000;
+        $parsed = (object) ['title' => 'Jitter', 'section' => null, 'blocks' => [$top, $bottom]];
+        $out = $builder->build($parsed);
+        $this->assertStringNotContainsString('local-lessonimportpptx-cols', $out->html);
+    }
+
+    /**
      * Stacked text boxes sharing a column keep their top-to-bottom order even when
      * the lower box has a slightly smaller x than the upper one.
      */

@@ -506,22 +506,35 @@ class html_builder {
         $current = [];
         $left = null;
         $right = null;
+        $colknown = true;
         foreach ($band as $b) {
+            $known = $b->cx > 0;
             $bleft = $b->x;
-            $bright = $b->cx > 0 ? $b->x + $b->cx : $b->x + self::COLUMN_GAP_EMU;
+            $bright = $known ? $b->x + $b->cx : $b->x + self::COLUMN_GAP_EMU;
             if ($current !== [] && $left !== null) {
-                $overlap = min($right, $bright) - max($left, $bleft);
-                $narrower = max(1, min($bright - $bleft, $right - $left));
-                if ($overlap * 2 < $narrower) {
+                if ($known && $colknown) {
+                    // Real widths both sides: split when the horizontal overlap is a
+                    // minority of the narrower block, tolerating a small overhang.
+                    $overlap = min($right, $bright) - max($left, $bleft);
+                    $narrower = max(1, min($bright - $bleft, $right - $left));
+                    $split = $overlap * 2 < $narrower;
+                } else {
+                    // An unknown width somewhere: the ratio would compare against a
+                    // synthetic gap, so fall back to splitting only past the edge.
+                    $split = $bleft >= $right;
+                }
+                if ($split) {
                     $clusters[] = $current;
                     $current = [];
                     $left = null;
                     $right = null;
+                    $colknown = true;
                 }
             }
             $current[] = $b;
             $left = $left === null ? $bleft : min($left, $bleft);
             $right = $right === null ? $bright : max($right, $bright);
+            $colknown = $colknown && $known;
         }
         if ($current !== []) {
             $clusters[] = $current;
