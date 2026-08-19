@@ -758,8 +758,12 @@ class html_builder {
         $cappara = $caption === ''
             ? ''
             : '<p class="mt-2 mb-0 text-muted">' . $caption . '</p>';
+        // No static aria-hidden: a closed .modal is already display:none (hidden
+        // from assistive tech), and Bootstrap toggles aria-hidden and focus itself
+        // on show/hide. Hard-coding it leaves a focusable subtree marked hidden,
+        // which browsers flag when focus lands inside the dialog.
         return '<div class="modal fade tiny-bootstrap-modal local-lessonimportpptx-cardmodal" id="'
-            . $uid . '" tabindex="-1"' . $arialabel . ' aria-hidden="true">'
+            . $uid . '" tabindex="-1"' . $arialabel . '>'
             . '<div class="modal-dialog modal-xl modal-dialog-centered">'
             . '<div class="modal-content">'
             . '<div class="modal-header py-2">'
