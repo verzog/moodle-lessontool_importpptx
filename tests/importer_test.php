@@ -1041,17 +1041,27 @@ final class importer_test extends \advanced_testcase {
         $image = new block(block::TYPE_IMAGE, 4000000, 3000000, 'ppt/media/hero.png');
         $image->cy = 3000000;
         $image->cx = 5000000;
+        // A full-bleed slide image: it should be rebased to fill the lede column.
+        $image->widthpct = 75;
         $parsed = (object) [
             'title' => 'Section Two',
             'section' => (object) ['panelright' => 3000000, 'colour' => '1F4E79'],
             'blocks' => [$label, $lede, $image],
         ];
         $out = $builder->build($parsed);
-        // Both the lede text and the image live inside the single col-9 lede column.
-        $colpos = strpos($out->html, 'col-12 col-md-9 local-lessonimportpptx-lede');
-        $this->assertNotFalse($colpos);
-        $this->assertGreaterThan($colpos, strpos($out->html, 'Lede text for the section.'));
-        $this->assertGreaterThan($colpos, strpos($out->html, '@@PLUGINFILE@@/hero.png'));
+        // Parse the fragment and confirm the image is a descendant of the col-md-9
+        // lede column (not merely somewhere after its opening tag).
+        $doc = new \DOMDocument();
+        libxml_use_internal_errors(true);
+        $doc->loadHTML('<?xml encoding="utf-8"?><div id="root">' . $out->html . '</div>');
+        libxml_clear_errors();
+        $xpath = new \DOMXPath($doc);
+        $inlede = $xpath->query('//div[contains(@class, "local-lessonimportpptx-lede")]//img');
+        $this->assertSame(1, $inlede->length);
+        // No image escapes the lede column into a trailing figure.
+        $this->assertSame(1, $xpath->query('//img')->length);
+        // The full-bleed image is rebased to fill the column, not its 75% slide width.
+        $this->assertSame('width:100%', $inlede->item(0)->getAttribute('style'));
         // The image follows the lede text within that column.
         $this->assertGreaterThan(
             strpos($out->html, 'Lede text for the section.'),

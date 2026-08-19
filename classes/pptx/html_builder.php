@@ -164,6 +164,14 @@ class html_builder {
         }));
 
         $colour = self::safe_colour($parsed->section->colour ?? '', $this->defaultcolour);
+        // A full-bleed section illustration now sits inside the col-md-9 lede column,
+        // so its slide-relative width would be measured against that narrower box and
+        // shrink again. Rebase such images to fill the column instead.
+        foreach ($media as $m) {
+            if ($m->widthpct >= self::FILL_WIDTH_PERCENT) {
+                $m->widthpct = 100;
+            }
+        }
         // The lede text and the section illustration share one column so the
         // coloured plate beside them spans the full height of the text and image
         // together, not just the height of the text. Bootstrap grid: the plate in
