@@ -5,18 +5,14 @@
  * light caption treatment for image grids.
  */
 
+/* The section hero uses the Bootstrap grid (container-fluid > row > col-3 + col-9);
+   only the plate's colour treatment is bespoke. */
 .local-lessonimportpptx-section {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    align-items: stretch;
     margin-bottom: 1rem;
 }
 
 .local-lessonimportpptx-plate {
-    flex: 0 0 auto;
-    min-width: 8rem;
-    max-width: 14rem;
+    height: 100%;
     padding: 1.5rem 1rem;
     color: #fff;
     border-radius: 0.25rem;
@@ -27,11 +23,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-}
-
-.local-lessonimportpptx-lede {
-    flex: 1 1 16rem;
-    min-width: 12rem;
+    overflow-wrap: anywhere;
 }
 
 .local-lessonimportpptx-grid .local-lessonimportpptx-cap {
