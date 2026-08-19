@@ -180,6 +180,18 @@ class importer {
                 continue;
             }
             $ext = strtolower((string) pathinfo($mediapath, PATHINFO_EXTENSION));
+            // Audio is not an image: stage its bytes as-is, skipping the GD
+            // conversion, blank-detection and downscaling that only apply to images.
+            if (self::is_audio_ext($ext)) {
+                $staged = $stagedir . '/' . $index++;
+                if (file_put_contents($staged, $bytes) === false) {
+                    $failed[] = $filename;
+                    continue;
+                }
+                unset($bytes);
+                $ready[$filename] = $staged;
+                continue;
+            }
             if ($ext === 'wmf' || $ext === 'emf') {
                 $bytes = \local_lessonimportpptx\graphics\converter::to_png($bytes, $ext);
                 if ($bytes === null) {
@@ -245,6 +257,16 @@ class importer {
                 $img->parentNode->removeChild($img);
             }
         }
+        // A failed audio clip drops its whole player, not just the <source>.
+        foreach (iterator_to_array($xpath->query('//source')) as $source) {
+            $src = $source->getAttribute('src');
+            if (preg_match('#@@PLUGINFILE@@/(.+)$#', $src, $m) && isset($failed[$m[1]])) {
+                $audio = $source->parentNode;
+                if ($audio !== null && $audio->parentNode !== null) {
+                    $audio->parentNode->removeChild($audio);
+                }
+            }
+        }
 
         // Remove figures and image cells that no longer hold an image, then any
         // grid/column rows left without cells, repeating until nothing else clears.
@@ -298,6 +320,16 @@ class importer {
 
     /** @var int Images larger than this many pixels are kept without a blank scan. */
     private const BLANK_SCAN_MAX_PIXELS = 2000000;
+
+    /**
+     * Whether a media extension is an audio format the importer copies verbatim.
+     *
+     * @param string $ext The lower-case file extension (no dot).
+     * @return bool True for a recognised audio extension.
+     */
+    private static function is_audio_ext(string $ext): bool {
+        return in_array($ext, ['m4a', 'mp4', 'aac', 'mp3', 'oga', 'ogg', 'wav'], true);
+    }
 
     /**
      * Detects an effectively blank image: one whose pixels are all either

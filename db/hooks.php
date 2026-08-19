@@ -15,11 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Version details for the PowerPoint import tool for the Lesson module.
- *
- * The Lesson module has no subplugin framework (there is no "lessontool"
- * plugin type in core Moodle), so this importer ships as a local plugin that
- * attaches itself to each lesson's settings navigation.
+ * Hook callbacks for local_lessonimportpptx.
  *
  * @package    local_lessonimportpptx
  * @copyright  2026 Vernon Spain
@@ -28,11 +24,9 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->component = 'local_lessonimportpptx';
-$plugin->version   = 2026081907;
-$plugin->requires  = 2025041400;
-$plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.8.0';
-$plugin->dependencies = [
-    'mod_lesson' => ANY_VERSION,
+$callbacks = [
+    [
+        'hook' => \core\hook\output\before_footer_html_generation::class,
+        'callback' => '\local_lessonimportpptx\hook_callbacks::before_footer_html_generation',
+    ],
 ];

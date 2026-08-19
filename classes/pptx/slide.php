@@ -335,6 +335,24 @@ class slide {
      * @return void
      */
     private function collect_picture(\DOMElement $pic, \DOMXPath $xpath, array &$out, ?array $tf = null): void {
+        // A narrated slide attaches its audio to a picture (the speaker icon) via
+        // <p:nvPr><a:audioFile r:link="..."/>. Emit an audio block for it and drop
+        // the icon: the player replaces the loudspeaker graphic entirely.
+        $audio = $xpath->query('.//p:nvPr/a:audioFile', $pic)->item(0);
+        if ($audio instanceof \DOMElement) {
+            $rid = $audio->getAttributeNS(package::NS_R, 'link');
+            if ($rid === '') {
+                $rid = $audio->getAttributeNS(package::NS_R, 'embed');
+            }
+            if ($rid !== '' && isset($this->rels[$rid])) {
+                [$y, $x, $cy, $cx] = $this->geometry($pic, $xpath, $tf);
+                $audioblock = new block(block::TYPE_AUDIO, $y, $x, $this->rels[$rid]);
+                $audioblock->cy = $cy;
+                $audioblock->cx = $cx;
+                $out[] = $audioblock;
+            }
+            return;
+        }
         $blip = $xpath->query('.//a:blip', $pic)->item(0);
         if (!$blip instanceof \DOMElement) {
             return;

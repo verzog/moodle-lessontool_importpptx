@@ -414,6 +414,31 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * An audio block renders a native player wired to the saved media file and
+     * marked for the view-page autoplay helper.
+     */
+    public function test_audio_block_renders_player(): void {
+        $builder = new html_builder('#442980');
+        $parsed = (object) [
+            'title' => 'Narrated',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_TEXT, 1000000, 0, ['Some narrated content.']),
+                new block(block::TYPE_AUDIO, 6000000, 0, 'ppt/media/media1.m4a'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        // A player with the helper's marker class and the m4a source/type.
+        $this->assertStringContainsString('<audio class="local-lessonimportpptx-audio"', $out->html);
+        $this->assertStringContainsString('<source src="@@PLUGINFILE@@/media1.m4a" type="audio/mp4">', $out->html);
+        // No loudspeaker image is emitted in its place.
+        $this->assertStringNotContainsString('<img', $out->html);
+        // The clip is registered for saving under its own name.
+        $this->assertContains('ppt/media/media1.m4a', $out->images);
+        $this->assertArrayHasKey('media1.m4a', $out->images);
+    }
+
+    /**
      * With the card-group option on, a lone image becomes a single-card group
      * (no card body, since it has no caption) rather than a centred figure.
      */

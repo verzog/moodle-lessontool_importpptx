@@ -25,6 +25,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $string['asyncqueued'] = 'This upload will create {$a} pages, so it is being imported in the background. The pages will appear in this lesson shortly.';
+$string['audiounsupported'] = 'Your browser does not support the audio element.';
 $string['clicktoenlarge'] = 'Click to enlarge';
 $string['confirmimport'] = 'Import PowerPoint';
 $string['confirmimportdetail'] = 'Create {$a} content pages in this lesson from the uploaded file? Existing pages will be kept and the new pages added after them.';
