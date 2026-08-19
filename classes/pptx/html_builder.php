@@ -169,10 +169,10 @@ class html_builder {
             // Bootstrap grid: the coloured label plate in a narrow col-3 beside the
             // lede text in col-9, so the two sit cleanly side by side and the plate
             // fills the row height instead of floating as a fixed-width box.
-            $plate = '<div class="col-3"><div class="local-lessonimportpptx-plate" style="background-color:'
+            $plate = '<div class="col-12 col-md-3"><div class="local-lessonimportpptx-plate" style="background-color:'
                 . $colour . ';">' . implode('<br>', $lines) . '</div></div>';
             $hero = '<div class="container-fluid local-lessonimportpptx-section"><div class="row">'
-                . $plate . '<div class="col-9 local-lessonimportpptx-lede">' . $lede . '</div></div></div>';
+                . $plate . '<div class="col-12 col-md-9 local-lessonimportpptx-lede">' . $lede . '</div></div></div>';
         } else {
             $hero = '<div class="local-lessonimportpptx-lede">' . $lede . '</div>';
         }

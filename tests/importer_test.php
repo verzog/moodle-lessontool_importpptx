@@ -1024,8 +1024,8 @@ final class importer_test extends \advanced_testcase {
         // The hero is laid out as a Bootstrap grid: plate in col-3, lede in col-9.
         $this->assertStringContainsString('container-fluid', $section->html);
         $this->assertStringContainsString('<div class="row">', $section->html);
-        $this->assertStringContainsString('class="col-3"', $section->html);
-        $this->assertStringContainsString('col-9 local-lessonimportpptx-lede', $section->html);
+        $this->assertStringContainsString('class="col-12 col-md-3"', $section->html);
+        $this->assertStringContainsString('col-12 col-md-9 local-lessonimportpptx-lede', $section->html);
         // Ordinary slides are not sections.
         $this->assertFalse($pages[6]->issection);
     }
