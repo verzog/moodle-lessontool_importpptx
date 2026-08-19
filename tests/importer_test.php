@@ -501,11 +501,24 @@ final class importer_test extends \advanced_testcase {
             imagefilledrectangle($im, 0, 0, 39, 29, imagecolorallocate($im, 255, 255, 255));
             imagefilledrectangle($im, 10, 8, 30, 22, imagecolorallocate($im, 20, 40, 90));
         });
+        // A single one-pixel line on an otherwise white 64x64 canvas: sparse
+        // content a sampling grid could miss, so every pixel must be inspected.
+        $sparseline = static function (): string {
+            $im = imagecreatetruecolor(64, 64);
+            imagefilledrectangle($im, 0, 0, 63, 63, imagecolorallocate($im, 255, 255, 255));
+            imageline($im, 0, 1, 63, 1, imagecolorallocate($im, 200, 40, 40));
+            ob_start();
+            imagepng($im);
+            $bytes = ob_get_clean();
+            imagedestroy($im);
+            return $bytes;
+        };
 
         $this->assertTrue($method->invoke(null, $white), 'A white rectangle is blank.');
         $this->assertTrue($method->invoke(null, $transparent), 'A transparent image is blank.');
         $this->assertFalse($method->invoke(null, $solid), 'A solid colour is not blank.');
         $this->assertFalse($method->invoke(null, $mostlywhite), 'White with content is not blank.');
+        $this->assertFalse($method->invoke(null, $sparseline()), 'A sparse line is not blank.');
         // Unreadable bytes are kept (returned as not-blank) rather than guessed at.
         $this->assertFalse($method->invoke(null, 'not an image'));
     }

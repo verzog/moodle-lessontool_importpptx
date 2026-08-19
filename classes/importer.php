@@ -296,6 +296,9 @@ class importer {
         return $path;
     }
 
+    /** @var int Images larger than this many pixels are kept without a blank scan. */
+    private const BLANK_SCAN_MAX_PIXELS = 2000000;
+
     /**
      * Detects an effectively blank image: one whose pixels are all either
      * transparent or near-white.
@@ -307,35 +310,45 @@ class importer {
      * PHP extension, so this respects the no-shell-out rule; when GD or the format
      * is unavailable the image is kept rather than guessed at.
      *
+     * The verdict is destructive (a blank image is removed), so every pixel is
+     * inspected rather than sampled: a sample grid could miss a sparse line and
+     * delete a valid graphic. Dimensions are read first without decoding, and any
+     * image above a pixel cap is kept unscanned, so a huge compressed source
+     * cannot be expanded into memory just to test it.
+     *
      * @param string $bytes The prepared image bytes.
-     * @return bool True when every sampled pixel is transparent or near-white.
+     * @return bool True when every pixel is transparent or near-white.
      */
     private static function is_blank(string $bytes): bool {
         if (!function_exists('imagecreatefromstring')) {
+            return false;
+        }
+        $info = @getimagesizefromstring($bytes);
+        if ($info === false) {
+            return false;
+        }
+        [$width, $height] = $info;
+        if ($width < 1 || $height < 1 || $width * $height > self::BLANK_SCAN_MAX_PIXELS) {
             return false;
         }
         $image = @imagecreatefromstring($bytes);
         if ($image === false) {
             return false;
         }
-        $width = imagesx($image);
-        $height = imagesy($image);
-        if ($width < 1 || $height < 1) {
-            imagedestroy($image);
-            return false;
+        // Normalise palette images so channel extraction below is uniform.
+        if (!imageistruecolor($image)) {
+            imagepalettetotruecolor($image);
         }
-        // Sample a bounded grid rather than every pixel so large images stay cheap.
-        $stepx = max(1, (int) floor($width / 32));
-        $stepy = max(1, (int) floor($height / 32));
         $blank = true;
-        for ($y = 0; $y < $height && $blank; $y += $stepy) {
-            for ($x = 0; $x < $width; $x += $stepx) {
-                $colour = imagecolorsforindex($image, imagecolorat($image, $x, $y));
-                // GD alpha runs 0 (opaque) to 127 (fully transparent).
-                if ($colour['alpha'] >= 120) {
+        for ($y = 0; $y < $height && $blank; $y++) {
+            for ($x = 0; $x < $width; $x++) {
+                $rgba = imagecolorat($image, $x, $y);
+                // GD packs truecolor as (alpha << 24) | (r << 16) | (g << 8) | b,
+                // with alpha 0 (opaque) to 127 (fully transparent).
+                if ((($rgba >> 24) & 0x7F) >= 120) {
                     continue;
                 }
-                if ($colour['red'] >= 250 && $colour['green'] >= 250 && $colour['blue'] >= 250) {
+                if ((($rgba >> 16) & 0xFF) >= 250 && (($rgba >> 8) & 0xFF) >= 250 && ($rgba & 0xFF) >= 250) {
                     continue;
                 }
                 $blank = false;
