@@ -24,9 +24,10 @@
     font-size: 1.5rem;
     line-height: 1.2;
     text-transform: uppercase;
-    /* The label reads as stacked lines (the source line breaks), so keep each
-       line intact instead of wrapping or breaking words. */
-    white-space: nowrap;
+    /* The label reads as stacked lines: the source line breaks (<br>) keep each
+       line on its own row. A single line wider than the narrow plate wraps and
+       breaks rather than overflowing the column or forcing horizontal scroll. */
+    overflow-wrap: break-word;
 }
 
 .local-lessonimportpptx-grid .local-lessonimportpptx-cap {
