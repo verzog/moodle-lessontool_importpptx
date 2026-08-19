@@ -187,6 +187,13 @@ class importer {
                     continue;
                 }
             }
+            // A blank placeholder rectangle (a white or transparent picture frame)
+            // imports as an empty card, so drop it like a failed image and let the
+            // cleanup pass take its card and zoom modal with it.
+            if (self::is_blank($bytes)) {
+                $failed[] = $filename;
+                continue;
+            }
             if ($maxdim > 0) {
                 $bytes = self::downscale($bytes, $maxdim);
             }
@@ -287,6 +294,56 @@ class importer {
         $path = $dir . '/import.pptx';
         $file->copy_content_to($path);
         return $path;
+    }
+
+    /**
+     * Detects an effectively blank image: one whose pixels are all either
+     * transparent or near-white.
+     *
+     * PowerPoint decks routinely carry white placeholder rectangles and empty
+     * picture frames that import as blank cards. These are treated like a failed
+     * image and pruned with their card and modal. A solid non-white graphic (a
+     * colour swatch, a logo, a photo) is not blank and is kept. GD is a bundled
+     * PHP extension, so this respects the no-shell-out rule; when GD or the format
+     * is unavailable the image is kept rather than guessed at.
+     *
+     * @param string $bytes The prepared image bytes.
+     * @return bool True when every sampled pixel is transparent or near-white.
+     */
+    private static function is_blank(string $bytes): bool {
+        if (!function_exists('imagecreatefromstring')) {
+            return false;
+        }
+        $image = @imagecreatefromstring($bytes);
+        if ($image === false) {
+            return false;
+        }
+        $width = imagesx($image);
+        $height = imagesy($image);
+        if ($width < 1 || $height < 1) {
+            imagedestroy($image);
+            return false;
+        }
+        // Sample a bounded grid rather than every pixel so large images stay cheap.
+        $stepx = max(1, (int) floor($width / 32));
+        $stepy = max(1, (int) floor($height / 32));
+        $blank = true;
+        for ($y = 0; $y < $height && $blank; $y += $stepy) {
+            for ($x = 0; $x < $width; $x += $stepx) {
+                $colour = imagecolorsforindex($image, imagecolorat($image, $x, $y));
+                // GD alpha runs 0 (opaque) to 127 (fully transparent).
+                if ($colour['alpha'] >= 120) {
+                    continue;
+                }
+                if ($colour['red'] >= 250 && $colour['green'] >= 250 && $colour['blue'] >= 250) {
+                    continue;
+                }
+                $blank = false;
+                break;
+            }
+        }
+        imagedestroy($image);
+        return $blank;
     }
 
     /**

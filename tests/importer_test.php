@@ -466,6 +466,51 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A blank white or transparent placeholder image is detected so it can be
+     * pruned, while a solid-colour graphic or a photo is kept.
+     */
+    public function test_blank_image_detection(): void {
+        if (!function_exists('imagecreatetruecolor')) {
+            $this->markTestSkipped('GD is not available.');
+        }
+        $method = new \ReflectionMethod(importer::class, 'is_blank');
+        $method->setAccessible(true);
+
+        $png = static function (callable $paint): string {
+            $im = imagecreatetruecolor(40, 30);
+            imagealphablending($im, false);
+            imagesavealpha($im, true);
+            $paint($im);
+            ob_start();
+            imagepng($im);
+            $bytes = ob_get_clean();
+            imagedestroy($im);
+            return $bytes;
+        };
+
+        $white = $png(static function ($im): void {
+            imagefilledrectangle($im, 0, 0, 39, 29, imagecolorallocate($im, 255, 255, 255));
+        });
+        $transparent = $png(static function ($im): void {
+            imagefilledrectangle($im, 0, 0, 39, 29, imagecolorallocatealpha($im, 0, 0, 0, 127));
+        });
+        $solid = $png(static function ($im): void {
+            imagefilledrectangle($im, 0, 0, 39, 29, imagecolorallocate($im, 200, 60, 60));
+        });
+        $mostlywhite = $png(static function ($im): void {
+            imagefilledrectangle($im, 0, 0, 39, 29, imagecolorallocate($im, 255, 255, 255));
+            imagefilledrectangle($im, 10, 8, 30, 22, imagecolorallocate($im, 20, 40, 90));
+        });
+
+        $this->assertTrue($method->invoke(null, $white), 'A white rectangle is blank.');
+        $this->assertTrue($method->invoke(null, $transparent), 'A transparent image is blank.');
+        $this->assertFalse($method->invoke(null, $solid), 'A solid colour is not blank.');
+        $this->assertFalse($method->invoke(null, $mostlywhite), 'White with content is not blank.');
+        // Unreadable bytes are kept (returned as not-blank) rather than guessed at.
+        $this->assertFalse($method->invoke(null, 'not an image'));
+    }
+
+    /**
      * Blocks sharing an x (e.g. a picture fill and its text) stack, not columns.
      */
     public function test_same_x_blocks_are_not_columns(): void {
