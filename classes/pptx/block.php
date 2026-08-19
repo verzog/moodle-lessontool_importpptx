@@ -40,6 +40,9 @@ class block {
     /** @var string A picture. Content is the media file's path within the package. */
     const TYPE_IMAGE = 'image';
 
+    /** @var string An audio clip. Content is the media file's path within the package. */
+    const TYPE_AUDIO = 'audio';
+
     /** @var string Pre-built HTML (table or SmartArt). Content is an HTML string. */
     const TYPE_HTML = 'html';
 

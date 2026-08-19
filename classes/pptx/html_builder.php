@@ -157,7 +157,9 @@ class html_builder {
         }
 
         $lead = array_values(array_filter($rest, static function (block $b): bool {
-            return $b->type === block::TYPE_TEXT || $b->type === block::TYPE_HTML;
+            // Audio rides with the lede so a narrated section slide keeps its clip.
+            return $b->type === block::TYPE_TEXT || $b->type === block::TYPE_HTML
+                || $b->type === block::TYPE_AUDIO;
         }));
         $media = array_values(array_filter($rest, static function (block $b): bool {
             return $b->type === block::TYPE_IMAGE;
@@ -520,10 +522,41 @@ class html_builder {
         if ($b->type === block::TYPE_HTML) {
             return $b->content;
         }
+        if ($b->type === block::TYPE_AUDIO) {
+            return $this->render_audio($b->content);
+        }
         if ($b->type === block::TYPE_TEXT) {
             return $this->text_html($b, $textsize);
         }
         return '';
+    }
+
+    /**
+     * Renders an imported audio clip as a native HTML5 player.
+     *
+     * The player is left without an autoplay attribute (browsers strip or ignore
+     * it in stored content); the view-page hook's helper starts playback on the
+     * first user gesture instead. A class marks the element for that helper.
+     *
+     * @param string $mediapath The audio media path within the package.
+     * @return string The audio-player HTML.
+     */
+    private function render_audio(string $mediapath): string {
+        $ref = $this->register_audio($mediapath);
+        $ext = strtolower((string) pathinfo($mediapath, PATHINFO_EXTENSION));
+        $mimes = [
+            'm4a' => 'audio/mp4',
+            'mp4' => 'audio/mp4',
+            'aac' => 'audio/aac',
+            'mp3' => 'audio/mpeg',
+            'oga' => 'audio/ogg',
+            'ogg' => 'audio/ogg',
+            'wav' => 'audio/wav',
+        ];
+        $typeattr = isset($mimes[$ext]) ? ' type="' . $mimes[$ext] . '"' : '';
+        $fallback = s(get_string('audiounsupported', 'local_lessonimportpptx'));
+        return '<audio class="local-lessonimportpptx-audio" controls preload="none">'
+            . '<source src="' . $ref . '"' . $typeattr . '>' . $fallback . '</audio>';
     }
 
     /**
@@ -810,17 +843,46 @@ class html_builder {
      * @return string The @@PLUGINFILE@@ link to embed in the HTML.
      */
     private function register_image(string $mediapath): string {
+        // WMF/EMF are vector formats a browser cannot display; the importer
+        // converts them to PNG, so reference the converted name here.
+        $base = preg_replace('/\.(wmf|emf)$/i', '.png', self::media_basename($mediapath, 'image'));
+        return $this->register_media($mediapath, $base);
+    }
+
+    /**
+     * Registers an audio clip for saving and returns its @@PLUGINFILE@@ reference.
+     *
+     * @param string $mediapath Source media path within the package.
+     * @return string The @@PLUGINFILE@@ link to embed in the HTML.
+     */
+    private function register_audio(string $mediapath): string {
+        return $this->register_media($mediapath, self::media_basename($mediapath, 'audio'));
+    }
+
+    /**
+     * Sanitises a media path into a safe file-area basename.
+     *
+     * @param string $mediapath Source media path within the package.
+     * @param string $fallback Name to use when the path has no usable basename.
+     * @return string The sanitised basename.
+     */
+    private static function media_basename(string $mediapath, string $fallback): string {
+        $base = preg_replace('/[^a-zA-Z0-9._-]+/', '_', basename($mediapath));
+        return ($base === '' || $base === null) ? $fallback : $base;
+    }
+
+    /**
+     * Records a media file under a unique file-area name and returns its link.
+     *
+     * @param string $mediapath Source media path within the package.
+     * @param string $base The desired (sanitised) basename.
+     * @return string The @@PLUGINFILE@@ link to embed in the HTML.
+     */
+    private function register_media(string $mediapath, string $base): string {
         $existing = array_search($mediapath, $this->images, true);
         if ($existing !== false) {
             return '@@PLUGINFILE@@/' . $existing;
         }
-        $base = preg_replace('/[^a-zA-Z0-9._-]+/', '_', basename($mediapath));
-        if ($base === '' || $base === null) {
-            $base = 'image';
-        }
-        // WMF/EMF are vector formats a browser cannot display; the importer
-        // converts them to PNG, so reference the converted name here.
-        $base = preg_replace('/\.(wmf|emf)$/i', '.png', $base);
         $name = $base;
         if (isset($this->images[$name])) {
             $dot = strrpos($base, '.');
