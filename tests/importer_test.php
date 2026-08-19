@@ -482,10 +482,11 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
-     * A failed card image drops both its card and its now-imageless zoom modal,
-     * and an emptied card group is removed entirely.
+     * When a card image fails, its card and zoom modal are removed; if that leaves
+     * a single survivor, the card group is reflowed to a centred figure rather
+     * than a half-width one-card group.
      */
-    public function test_failed_card_image_removes_card_and_modal(): void {
+    public function test_failed_card_image_reflows_survivor_to_figure(): void {
         $method = new \ReflectionMethod(importer::class, 'strip_images');
         $method->setAccessible(true);
         $builder = new html_builder('#442980', true);
@@ -499,16 +500,45 @@ final class importer_test extends \advanced_testcase {
         ];
         $html = $builder->build($parsed)->html;
         $out = $method->invoke(null, $html, ['gone.png']);
-        // The good card and its modal survive; the failed one and its modal go.
+        // The survivor remains; the failed image is gone.
         $this->assertStringContainsString('@@PLUGINFILE@@/keep.png', $out);
         $this->assertStringNotContainsString('gone.png', $out);
-        $this->assertStringContainsString('local-lessonimportpptx-cardgroup', $out);
-        // Exactly one card and one modal remain, still wired to each other.
-        preg_match_all('/id="(lessonImportCard\w+)"/', $out, $ids);
-        preg_match_all('/data-bs-target="#(lessonImportCard\w+)"/', $out, $targets);
-        $this->assertCount(1, $ids[1]);
-        $this->assertCount(1, $targets[1]);
-        $this->assertSame($targets[1][0], $ids[1][0]);
+        // The lone survivor is reflowed to a figure, and the group and every zoom
+        // modal are gone (no half-width one-card group, no triggerless modal).
+        $this->assertStringContainsString('local-lessonimportpptx-figure', $out);
+        $this->assertStringNotContainsString('local-lessonimportpptx-cardgroup', $out);
+        $this->assertStringNotContainsString('local-lessonimportpptx-cardmodal', $out);
+        $this->assertStringNotContainsString('data-bs-target', $out);
+    }
+
+    /**
+     * A single unsized block (a placeholder inheriting its size from the layout)
+     * must not force the whole slide onto the crude band fallback: a picture and
+     * the text beside it still overlap into one row and render as columns.
+     */
+    public function test_overlap_banding_survives_unsized_block(): void {
+        $builder = new html_builder('#442980');
+        $text = new block(block::TYPE_TEXT, 1800000, 700000, ['Beside the picture.']);
+        $text->cy = 3400000;
+        $text->cx = 7000000;
+        $image = new block(block::TYPE_IMAGE, 1400000, 8000000, 'ppt/media/pic.png');
+        $image->cy = 4100000;
+        $image->cx = 2200000;
+        // No cy: a layout-inherited placeholder rendered below the pair.
+        $footer = new block(block::TYPE_TEXT, 6200000, 700000, ['Footer label.']);
+        $parsed = (object) [
+            'title' => 'Design',
+            'section' => null,
+            'blocks' => [$image, $text, $footer],
+        ];
+        $out = $builder->build($parsed);
+        // The picture and its adjacent text sit side by side, text (left) first.
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertLessThan(
+            strpos($out->html, '@@PLUGINFILE@@/pic.png'),
+            strpos($out->html, 'Beside the picture.')
+        );
+        $this->assertStringContainsString('Footer label.', $out->html);
     }
 
     /**

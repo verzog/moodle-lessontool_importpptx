@@ -63,9 +63,10 @@ class html_builder {
      * Constructor.
      *
      * @param string $defaultcolour Fallback section-plate colour (e.g. "#442980").
-     * @param bool $cardgroup When true, plain image runs render as a Bootstrap
-     *                        card group (matching the tiny_bootstrap plugin)
-     *                        instead of a plain figure or image grid.
+     * @param bool $cardgroup When true, a run of two or more plain images renders
+     *                        as a Bootstrap card group (matching the tiny_bootstrap
+     *                        plugin) instead of an image grid; a lone image is a
+     *                        centred figure either way.
      * @param int $bodysize Point size to force on body text, or 0 to keep the slide's sizes.
      * @param int $adjacentsize Point size to force on text beside an image, or 0 to keep the slide's sizes.
      */
@@ -275,7 +276,11 @@ class html_builder {
      * @return array[] A list of bands, each a left-to-right block[].
      */
     private function into_bands(array $blocks): array {
-        if ($this->heights_known($blocks)) {
+        // Overlap grouping needs at least one real height to work with. A single
+        // unsized block (e.g. a placeholder that inherits its size from the layout)
+        // must not drop the whole slide onto the crude fixed-band fallback, which
+        // would stack a picture and the text genuinely beside it into two rows.
+        if ($this->any_height_known($blocks)) {
             return $this->into_rows_by_overlap($blocks);
         }
         $bands = [];
@@ -297,18 +302,21 @@ class html_builder {
     }
 
     /**
-     * Whether every block carries a positive height, enabling overlap grouping.
+     * Whether at least one block carries a positive height.
+     *
+     * Overlap grouping tolerates the odd unsized block (it lands in its own row),
+     * so a single known height is enough to prefer it over the crude fallback.
      *
      * @param block[] $blocks The blocks to test.
-     * @return bool True if the list is non-empty and all heights are known.
+     * @return bool True if any block has a known height.
      */
-    private function heights_known(array $blocks): bool {
+    private function any_height_known(array $blocks): bool {
         foreach ($blocks as $b) {
-            if ($b->cy <= 0) {
-                return false;
+            if ($b->cy > 0) {
+                return true;
             }
         }
-        return $blocks !== [];
+        return false;
     }
 
     /**
