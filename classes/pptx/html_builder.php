@@ -157,7 +157,9 @@ class html_builder {
         }
 
         $lead = array_values(array_filter($rest, static function (block $b): bool {
-            return $b->type === block::TYPE_TEXT || $b->type === block::TYPE_HTML;
+            // Audio rides with the lede so a narrated section slide keeps its clip.
+            return $b->type === block::TYPE_TEXT || $b->type === block::TYPE_HTML
+                || $b->type === block::TYPE_AUDIO;
         }));
         $media = array_values(array_filter($rest, static function (block $b): bool {
             return $b->type === block::TYPE_IMAGE;

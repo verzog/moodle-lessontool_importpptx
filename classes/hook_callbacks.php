@@ -32,11 +32,11 @@ class hook_callbacks {
      * scripts from stored content, so a small helper is attached from here: it
      * tries to play on load and otherwise starts on the first user gesture.
      *
-     * @param \core\hook\output\before_footer_html_generation $hook The footer hook.
+     * @param \core\hook\output\before_standard_footer_html_generation $hook The footer hook.
      * @return void
      */
-    public static function before_footer_html_generation(
-        \core\hook\output\before_footer_html_generation $hook
+    public static function before_standard_footer_html_generation(
+        \core\hook\output\before_standard_footer_html_generation $hook
     ): void {
         global $PAGE;
 
@@ -52,27 +52,37 @@ require([], function() {
     if (!players.length) {
         return;
     }
-    var play = function() {
-        players.forEach(function(audio) {
-            var attempt = audio.play();
-            if (attempt && typeof attempt.catch === 'function') {
-                attempt.catch(function() {
-                    return null;
-                });
-            }
-        });
-    };
-    play();
-    var events = ['pointerdown', 'keydown', 'touchstart'];
+    // Play only one clip so that several narrated chapters on one page (a
+    // print-all view) or several clips never start together.
+    var player = players[0];
+    // Completion events that grant media activation across mouse, touch and
+    // keyboard; pointerdown/touchstart can fire before activation is granted.
+    var events = ['click', 'keydown', 'touchend'];
     var onfirst = function() {
-        events.forEach(function(name) {
-            document.removeEventListener(name, onfirst, true);
-        });
-        play();
+        var attempt = player.play();
+        if (attempt && typeof attempt.then === 'function') {
+            attempt.then(function() {
+                events.forEach(function(name) {
+                    document.removeEventListener(name, onfirst, true);
+                });
+            }).catch(function() {
+                return null;
+            });
+        }
     };
-    events.forEach(function(name) {
-        document.addEventListener(name, onfirst, true);
-    });
+    var listen = function() {
+        events.forEach(function(name) {
+            document.addEventListener(name, onfirst, true);
+        });
+    };
+    // Try immediately (sites with prior media engagement allow it); wait for a
+    // gesture only if that is blocked, and stop only once playback has started.
+    var initial = player.play();
+    if (initial && typeof initial.then === 'function') {
+        initial.catch(listen);
+    } else {
+        listen();
+    }
 });
 JS;
         $PAGE->requires->js_amd_inline($js);

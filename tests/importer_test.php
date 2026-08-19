@@ -439,6 +439,28 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A narrated section-divider slide keeps its audio: the player renders and
+     * the clip is registered for saving even on the section layout path.
+     */
+    public function test_section_slide_keeps_audio(): void {
+        $builder = new html_builder('#442980');
+        $parsed = (object) [
+            'title' => 'Section Three',
+            'section' => (object) ['panelright' => 3000000, 'colour' => '1F4E79'],
+            'blocks' => [
+                new block(block::TYPE_TEXT, 300000, 300000, ['SECTION THREE']),
+                new block(block::TYPE_TEXT, 400000, 4000000, ['Section lede.']),
+                new block(block::TYPE_AUDIO, 6000000, 4000000, 'ppt/media/media2.m4a'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        $this->assertTrue($out->issection);
+        $this->assertStringContainsString('<audio class="local-lessonimportpptx-audio"', $out->html);
+        $this->assertStringContainsString('@@PLUGINFILE@@/media2.m4a', $out->html);
+        $this->assertArrayHasKey('media2.m4a', $out->images);
+    }
+
+    /**
      * With the card-group option on, a lone image becomes a single-card group
      * (no card body, since it has no caption) rather than a centred figure.
      */
