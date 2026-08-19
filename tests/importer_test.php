@@ -1031,6 +1031,45 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * The section illustration renders inside the lede column, below the lede text,
+     * so the coloured plate beside it spans the full height of text plus image.
+     */
+    public function test_section_media_shares_lede_column(): void {
+        $builder = new html_builder('#442980');
+        $label = new block(block::TYPE_TEXT, 300000, 300000, ['SECTION TWO']);
+        $lede = new block(block::TYPE_TEXT, 4000000, 400000, ['Lede text for the section.']);
+        $image = new block(block::TYPE_IMAGE, 4000000, 3000000, 'ppt/media/hero.png');
+        $image->cy = 3000000;
+        $image->cx = 5000000;
+        // A full-bleed slide image: it should be rebased to fill the lede column.
+        $image->widthpct = 75;
+        $parsed = (object) [
+            'title' => 'Section Two',
+            'section' => (object) ['panelright' => 3000000, 'colour' => '1F4E79'],
+            'blocks' => [$label, $lede, $image],
+        ];
+        $out = $builder->build($parsed);
+        // Parse the fragment and confirm the image is a descendant of the col-md-9
+        // lede column (not merely somewhere after its opening tag).
+        $doc = new \DOMDocument();
+        libxml_use_internal_errors(true);
+        $doc->loadHTML('<?xml encoding="utf-8"?><div id="root">' . $out->html . '</div>');
+        libxml_clear_errors();
+        $xpath = new \DOMXPath($doc);
+        $inlede = $xpath->query('//div[contains(@class, "local-lessonimportpptx-lede")]//img');
+        $this->assertSame(1, $inlede->length);
+        // No image escapes the lede column into a trailing figure.
+        $this->assertSame(1, $xpath->query('//img')->length);
+        // The full-bleed image is rebased to fill the column, not its 75% slide width.
+        $this->assertSame('width:100%', $inlede->item(0)->getAttribute('style'));
+        // The image follows the lede text within that column.
+        $this->assertGreaterThan(
+            strpos($out->html, 'Lede text for the section.'),
+            strpos($out->html, '@@PLUGINFILE@@/hero.png')
+        );
+    }
+
+    /**
      * A full import creates one linked content page per slide, each with a
      * Continue button, and saves images into mod_lesson's page_contents area.
      */

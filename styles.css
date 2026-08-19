@@ -13,17 +13,21 @@
 
 .local-lessonimportpptx-plate {
     height: 100%;
-    padding: 1.5rem 1rem;
+    padding: 1.5rem 1.25rem;
     color: #fff;
     border-radius: 0.25rem;
     display: flex;
-    align-items: center;
+    flex-direction: column;
     justify-content: center;
-    text-align: center;
+    text-align: left;
     font-weight: 700;
+    font-size: 1.5rem;
+    line-height: 1.2;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    overflow-wrap: anywhere;
+    /* The label reads as stacked lines: the source line breaks (<br>) keep each
+       line on its own row. A single line wider than the narrow plate wraps and
+       breaks rather than overflowing the column or forcing horizontal scroll. */
+    overflow-wrap: break-word;
 }
 
 .local-lessonimportpptx-grid .local-lessonimportpptx-cap {
