@@ -208,6 +208,30 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A text box drawn wider than its text, so its right edge slightly overhangs
+     * the picture beside it, still splits into columns (text left, picture right)
+     * rather than collapsing into one stacked cluster. Geometry mirrors a real
+     * slide: text x 0.6-7.05in, picture x 6.72-12.73in (a ~0.33in overhang).
+     */
+    public function test_slight_overhang_still_columns(): void {
+        $builder = new html_builder('#442980');
+        $text = new block(block::TYPE_TEXT, 1645920, 548640, ['Extend the base to reduce tension.']);
+        $text->cy = 4105656;
+        $text->cx = 5897880;
+        $image = new block(block::TYPE_IMAGE, 1645920, 6144768, 'ppt/media/plan.png');
+        $image->cy = 3666744;
+        $image->cx = 5495544;
+        $parsed = (object) ['title' => 'Plan B', 'section' => null, 'blocks' => [$image, $text]];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringNotContainsString('local-lessonimportpptx-figure', $out->html);
+        $this->assertLessThan(
+            strpos($out->html, '@@PLUGINFILE@@/plan.png'),
+            strpos($out->html, 'Extend the base to reduce tension.')
+        );
+    }
+
+    /**
      * Stacked text boxes sharing a column keep their top-to-bottom order even when
      * the lower box has a slightly smaller x than the upper one.
      */

@@ -489,8 +489,14 @@ class html_builder {
     }
 
     /**
-     * Groups a band's blocks into horizontal clusters (columns): consecutive
-     * blocks whose x offsets are within {@see self::COLUMN_GAP_EMU} share a column.
+     * Groups a band's blocks into horizontal clusters (columns).
+     *
+     * A block opens a new column when it overlaps the current column's horizontal
+     * span by less than half of the narrower width. A block that mostly overlaps
+     * the column (e.g. a caption laid over a background picture) stays in it and
+     * is stacked; a block whose bounding box only slightly overhangs the column
+     * (a common case where a text box is drawn wider than its text and laps over
+     * the picture beside it) still splits off as its own column.
      *
      * @param block[] $band The band's blocks, sorted left to right.
      * @return array[] A list of columns, each a block[] in reading order.
@@ -498,20 +504,24 @@ class html_builder {
     private function cluster_by_x(array $band): array {
         $clusters = [];
         $current = [];
+        $left = null;
         $right = null;
         foreach ($band as $b) {
-            // Start a new column only when this block begins to the right of the
-            // whole current column — a genuine horizontal split. A block whose
-            // span overlaps the column (e.g. a caption laid over a background
-            // picture at a different x) stays in it and is stacked, not columned.
-            if ($right !== null && $b->x >= $right && $current !== []) {
-                $clusters[] = $current;
-                $current = [];
-                $right = null;
+            $bleft = $b->x;
+            $bright = $b->cx > 0 ? $b->x + $b->cx : $b->x + self::COLUMN_GAP_EMU;
+            if ($current !== [] && $left !== null) {
+                $overlap = min($right, $bright) - max($left, $bleft);
+                $narrower = max(1, min($bright - $bleft, $right - $left));
+                if ($overlap * 2 < $narrower) {
+                    $clusters[] = $current;
+                    $current = [];
+                    $left = null;
+                    $right = null;
+                }
             }
             $current[] = $b;
-            $edge = $b->cx > 0 ? $b->x + $b->cx : $b->x + self::COLUMN_GAP_EMU;
-            $right = $right === null ? $edge : max($right, $edge);
+            $left = $left === null ? $bleft : min($left, $bleft);
+            $right = $right === null ? $bright : max($right, $bright);
         }
         if ($current !== []) {
             $clusters[] = $current;
