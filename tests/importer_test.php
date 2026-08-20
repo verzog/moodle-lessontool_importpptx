@@ -208,6 +208,46 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A text box drawn wider than its text, so its right edge slightly overhangs
+     * the picture beside it, still splits into columns (text left, picture right)
+     * rather than collapsing into one stacked cluster. Geometry mirrors a real
+     * slide: text x 0.6-7.05in, picture x 6.72-12.73in (a ~0.33in overhang).
+     */
+    public function test_slight_overhang_still_columns(): void {
+        $builder = new html_builder('#442980');
+        $text = new block(block::TYPE_TEXT, 1645920, 548640, ['Extend the base to reduce tension.']);
+        $text->cy = 4105656;
+        $text->cx = 5897880;
+        $image = new block(block::TYPE_IMAGE, 1645920, 6144768, 'ppt/media/plan.png');
+        $image->cy = 3666744;
+        $image->cx = 5495544;
+        $parsed = (object) ['title' => 'Plan B', 'section' => null, 'blocks' => [$image, $text]];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringNotContainsString('local-lessonimportpptx-figure', $out->html);
+        $this->assertLessThan(
+            strpos($out->html, '@@PLUGINFILE@@/plan.png'),
+            strpos($out->html, 'Extend the base to reduce tension.')
+        );
+    }
+
+    /**
+     * With unknown widths the proportional-overlap rule would compare against a
+     * synthetic gap, so the fallback keeps the full one-inch offset threshold:
+     * two unsized blocks 0.75in apart stay in one cluster (stacked), not columns.
+     */
+    public function test_unknown_width_blocks_keep_gap_threshold(): void {
+        $builder = new html_builder('#442980');
+        $top = new block(block::TYPE_TEXT, 1500000, 500000, ['Upper unsized line.']);
+        $top->cy = 1500000;
+        $bottom = new block(block::TYPE_TEXT, 1600000, 1185600, ['Lower unsized line.']);
+        $bottom->cy = 1500000;
+        $parsed = (object) ['title' => 'Jitter', 'section' => null, 'blocks' => [$top, $bottom]];
+        $out = $builder->build($parsed);
+        $this->assertStringNotContainsString('local-lessonimportpptx-cols', $out->html);
+    }
+
+    /**
      * Stacked text boxes sharing a column keep their top-to-bottom order even when
      * the lower box has a slightly smaller x than the upper one.
      */
