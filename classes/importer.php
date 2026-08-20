@@ -204,24 +204,34 @@ class importer {
         int $maxdim,
         string $stagedir
     ): array {
+        // Check the option before probing the renderer: an ordinary editable
+        // import must not pay the LibreOffice availability probe.
+        if (!$this->smartartimages) {
+            return [];
+        }
         $renderer = $this->renderer ?? (renderer::is_available() ? new renderer() : null);
-        if (!$this->smartartimages || $renderer === null) {
+        if ($renderer === null) {
             return [];
         }
         // Which visible slides carry SmartArt, keyed by their 1-based render page.
+        // A hidden SmartArt slide (show="0") cannot be imaged — the renderer omits
+        // it from the render — so it keeps its editable (flattened) content.
         $wanted = [];
-        $page = 0;
+        $visible = 0;
         foreach ($slidepaths as $index => $slidepath) {
             $doc = $package->get_xml($slidepath);
             if (self::slide_is_hidden($doc)) {
                 continue;
             }
-            $page++;
+            $visible++;
             if (self::slide_has_smartart($doc)) {
-                $wanted[$page] = $index;
+                $wanted[$visible] = $index;
             }
         }
-        if (empty($wanted)) {
+        // The render backend caps at MAX_PAGES; the editable parser allows more
+        // slides. If the whole-deck render would be refused, skip imaging so the
+        // import still succeeds (SmartArt slides fall back to flattened content).
+        if (empty($wanted) || $visible > pdf\renderer::MAX_PAGES) {
             return [];
         }
         $images = [];

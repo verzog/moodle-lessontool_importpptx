@@ -1512,9 +1512,7 @@ final class importer_test extends \advanced_testcase {
         $this->assertStringContainsString('@@PLUGINFILE@@/slide-4.png', $pages[3]->contents);
         $this->assertStringNotContainsString('<ul>', $pages[3]->contents);
         $fs = get_file_storage();
-        $this->assertTrue($fs->file_exists(
-            $context->id, 'mod_lesson', 'page_contents', $pages[3]->id, '/', 'slide-4.png'
-        ));
+        $this->assertTrue($fs->file_exists($context->id, 'mod_lesson', 'page_contents', $pages[3]->id, '/', 'slide-4.png'));
         // A non-SmartArt slide keeps its editable content (slide 2's image).
         $this->assertStringContainsString('@@PLUGINFILE@@/image1.png', $pages[1]->contents);
     }
