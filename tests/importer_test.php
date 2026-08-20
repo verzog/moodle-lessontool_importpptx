@@ -1710,8 +1710,45 @@ final class importer_test extends \advanced_testcase {
         $this->assertSame('Presentation Title', $pages[0]->title);
         $this->assertSame('Overview', $pages[1]->title);
         $this->assertSame('Clock', $pages[2]->title);
-        // Slide 9 has no title placeholder, so it falls back to the numbered title.
-        $this->assertSame(get_string('slidetitle', 'local_lessonimportpptx', 9), $pages[3]->title);
+        // Slide 9 has no title placeholder; its short leading heading is promoted
+        // (matching the editable importer) rather than a numbered fallback.
+        $this->assertSame('Short Heading', $pages[3]->title);
+    }
+
+    /**
+     * Runs the private image-backend title extractor on a slide built from XML.
+     *
+     * @param string $sptree The <spTree> shapes as XML (plain local names).
+     * @return string The derived title.
+     */
+    private function image_slide_title(string $sptree): string {
+        $doc = new \DOMDocument();
+        $doc->loadXML('<sld><cSld><spTree>' . $sptree . '</spTree></cSld></sld>');
+        $method = new \ReflectionMethod(\local_lessonimportpptx\office_importer::class, 'slide_title_text');
+        $method->setAccessible(true);
+        return $method->invoke(null, $doc);
+    }
+
+    /**
+     * With no title placeholder, the image backend promotes the topmost short
+     * single-line text box, so a styled heading still names the page.
+     */
+    public function test_image_title_promotes_leading_heading(): void {
+        $heading = '<sp><spPr><xfrm><off x="800000" y="400000"/><ext cx="9000000" cy="900000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Workshop Session 7</t></r></p></txBody></sp>';
+        $body = '<sp><spPr><xfrm><off x="800000" y="2000000"/><ext cx="5000000" cy="3000000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Nose</t></r></p><p><r><t>Anatomy</t></r></p></txBody></sp>';
+        $this->assertSame('Workshop Session 7', $this->image_slide_title($heading . $body));
+    }
+
+    /**
+     * A slide whose leading content is a multi-line body (no short heading) keeps
+     * the numbered fallback: the extractor returns an empty title.
+     */
+    public function test_image_title_falls_back_without_heading(): void {
+        $body = '<sp><spPr><xfrm><off x="800000" y="400000"/><ext cx="9000000" cy="4000000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>First bullet line</t></r></p><p><r><t>Second bullet line</t></r></p></txBody></sp>';
+        $this->assertSame('', $this->image_slide_title($body));
     }
 
     /**
