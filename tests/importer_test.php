@@ -1752,6 +1752,17 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A slide that leads with a picture is not titled from a short label lower
+     * down: only the first content block counts, matching the editable importer.
+     */
+    public function test_image_title_ignores_label_below_leading_picture(): void {
+        $pic = '<pic><spPr><xfrm><off x="0" y="0"/><ext cx="9000000" cy="5000000"/></xfrm></spPr></pic>';
+        $label = '<sp><spPr><xfrm><off x="1000000" y="6000000"/><ext cx="2000000" cy="400000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Figure caption</t></r></p></txBody></sp>';
+        $this->assertSame('', $this->image_slide_title($pic . $label));
+    }
+
+    /**
      * When poppler is available, a PDF imports one image content page per page.
      */
     public function test_pdf_import(): void {

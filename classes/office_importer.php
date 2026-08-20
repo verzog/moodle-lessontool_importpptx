@@ -285,47 +285,75 @@ class office_importer {
     /**
      * Promotes the topmost short, single-line text box to a title.
      *
-     * Mirrors the editable importer: the slide's leading content, when it is a
-     * single short line (not a multi-line body, and not a one-or-two-character
-     * badge), becomes the page title. Footer/slide-number/date furniture and
-     * title placeholders are skipped, and the box highest on the slide wins.
+     * Mirrors html_builder::promote_title: only the slide's leading content block
+     * in reading order is considered. If the topmost block — counting pictures,
+     * tables/diagrams and text boxes alike — is a single short line of text
+     * (longer than a badge, within the title length), it becomes the page title;
+     * anything else (a leading picture, a multi-line body, a long text block)
+     * yields no title, so the caller keeps the numbered fallback. Footer/slide-
+     * number/date furniture and short badge labels are ignored, exactly as the
+     * editable parser drops them before ordering.
      *
      * @param \DOMXPath $xpath An xpath bound to the slide document.
-     * @return string The promoted title, or '' when nothing qualifies.
+     * @return string The promoted title, or '' when the leading block is not one.
      */
     private static function promote_leading_line(\DOMXPath $xpath): string {
-        $best = '';
-        $besttop = null;
         $skip = ['ftr', 'sldNum', 'dt', 'title', 'ctrTitle'];
-        foreach ($xpath->query("//*[local-name()='sp']") as $sp) {
+        $blocks = [];
+        // Non-text content (pictures, tables, charts, SmartArt) is never a title,
+        // but it still counts as leading content when it sits above the text.
+        $nontext = "//*[local-name()='pic'] | //*[local-name()='graphicFrame']"
+            . " | //*[local-name()='sp'][.//*[local-name()='blipFill']]";
+        foreach ($xpath->query($nontext) as $shape) {
+            $blocks[] = ['top' => self::shape_top($xpath, $shape), 'title' => null];
+        }
+        // Text boxes: a title candidate only when a single short line.
+        foreach ($xpath->query("//*[local-name()='sp'][not(.//*[local-name()='blipFill'])]") as $sp) {
             $ph = $xpath->query(".//*[local-name()='ph']", $sp)->item(0);
             if ($ph instanceof \DOMElement && in_array($ph->getAttribute('type'), $skip, true)) {
                 continue;
             }
-            $lines = [];
-            foreach ($xpath->query(".//*[local-name()='txBody']/*[local-name()='p']", $sp) as $paragraph) {
-                $line = '';
-                foreach ($xpath->query(".//*[local-name()='t']", $paragraph) as $run) {
-                    $line .= $run->textContent;
-                }
-                if (trim($line) !== '') {
-                    $lines[] = trim(preg_replace('/\s+/u', ' ', $line));
-                }
-            }
-            if (count($lines) !== 1) {
+            $lines = self::shape_paragraphs($xpath, $sp);
+            if (empty($lines)) {
                 continue;
             }
-            $length = \core_text::strlen($lines[0]);
-            if ($length <= slide::BADGE_MAX_CHARS || $length > html_builder::TITLE_FALLBACK_MAX_CHARS) {
+            $single = count($lines) === 1;
+            $length = $single ? \core_text::strlen($lines[0]) : 0;
+            // A lone short label is a badge (furniture), dropped like the editable path.
+            if ($single && $length <= slide::BADGE_MAX_CHARS) {
                 continue;
             }
-            $top = self::shape_top($xpath, $sp);
-            if ($besttop === null || $top < $besttop) {
-                $besttop = $top;
-                $best = $lines[0];
+            $title = ($single && $length <= html_builder::TITLE_FALLBACK_MAX_CHARS) ? $lines[0] : null;
+            $blocks[] = ['top' => self::shape_top($xpath, $sp), 'title' => $title];
+        }
+        if (empty($blocks)) {
+            return '';
+        }
+        usort($blocks, static function (array $a, array $b): int {
+            return $a['top'] <=> $b['top'];
+        });
+        return (string) ($blocks[0]['title'] ?? '');
+    }
+
+    /**
+     * Returns a shape's non-empty paragraphs, each collapsed to a single line.
+     *
+     * @param \DOMXPath $xpath An xpath bound to the shape's document.
+     * @param \DOMElement $sp The shape element.
+     * @return string[] The shape's non-empty lines, in order.
+     */
+    private static function shape_paragraphs(\DOMXPath $xpath, \DOMElement $sp): array {
+        $lines = [];
+        foreach ($xpath->query(".//*[local-name()='txBody']/*[local-name()='p']", $sp) as $paragraph) {
+            $line = '';
+            foreach ($xpath->query(".//*[local-name()='t']", $paragraph) as $run) {
+                $line .= $run->textContent;
+            }
+            if (trim($line) !== '') {
+                $lines[] = trim(preg_replace('/\s+/u', ' ', $line));
             }
         }
-        return $best;
+        return $lines;
     }
 
     /**
