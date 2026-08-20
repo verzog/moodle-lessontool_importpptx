@@ -149,6 +149,58 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * With the card-group option on, an image sitting beside text (a column)
+     * becomes a click-to-enlarge card, not a plain picture, while staying in
+     * its column beside the text.
+     */
+    public function test_side_by_side_image_becomes_card_when_card_group_enabled(): void {
+        $builder = new html_builder('#442980', true);
+        $parsed = (object) [
+            'title' => 'Two up',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_TEXT, 2000000, 0, ['Left column paragraph.']),
+                new block(block::TYPE_IMAGE, 2000000, 7000000, 'ppt/media/image1.png'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringContainsString('<p>Left column paragraph.</p>', $out->html);
+        // The image is a zoomable card (trigger + modal), not a plain figure.
+        $this->assertStringContainsString('local-lessonimportpptx-card', $out->html);
+        $this->assertStringContainsString('data-bs-toggle="modal"', $out->html);
+        $this->assertStringContainsString('tiny-bs-card-img', $out->html);
+        $this->assertStringContainsString('@@PLUGINFILE@@/image1.png', $out->html);
+        $this->assertStringNotContainsString(
+            '<img src="@@PLUGINFILE@@/image1.png" alt="" class="img-fluid">',
+            $out->html
+        );
+    }
+
+    /**
+     * Without the card-group option, an image beside text stays a plain picture
+     * with no zoom modal.
+     */
+    public function test_side_by_side_image_stays_plain_without_card_group(): void {
+        $builder = new html_builder('#442980', false);
+        $parsed = (object) [
+            'title' => 'Two up',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_TEXT, 2000000, 0, ['Left column paragraph.']),
+                new block(block::TYPE_IMAGE, 2000000, 7000000, 'ppt/media/image1.png'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringContainsString(
+            '<img src="@@PLUGINFILE@@/image1.png" alt="" class="img-fluid">',
+            $out->html
+        );
+        $this->assertStringNotContainsString('data-bs-toggle="modal"', $out->html);
+    }
+
+    /**
      * A tall image and the text beside it, with different tops but overlapping
      * heights, are laid out side by side (image left) rather than stacked.
      */

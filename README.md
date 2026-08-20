@@ -157,7 +157,11 @@ the tools are absent the option simply does not appear and import stays editable
 ## Import options
 
 The tunable options live on the import form itself, under **Show more**, so each
-deck can be imported with its own values:
+deck can be imported with its own values. When **Import as** is set to *Faithful
+images*, the options that only shape editable content — card group,
+SmartArt-as-images, the text sizes and the section colour — are hidden, since
+they have no effect on rendered slide images; only **Maximum image dimension**
+applies to both modes:
 
 - **Maximum image dimension (px)** — down-scale images on import (`0` keeps
   originals). Default 1600.
@@ -168,7 +172,9 @@ deck can be imported with its own values:
   the [`tiny_bootstrap`](https://github.com/verzog/moodle-tiny_bootstrap) editor
   plugin inserts — instead of the plain image grid. Every picture becomes a card
   with a click-to-enlarge zoom, and a paired short caption becomes the card
-  text. A slide holding a single picture is always shown as a centred,
+  text. A picture that sits beside text in a column also becomes a zoomable
+  card, so the pop-up zoom is not lost when an image shares a row with text. A
+  page holding a single picture on its own is still shown as a centred,
   height-capped figure rather than a one-card group. Reconstructed diagrams
   (SmartArt and shape flows) are never turned into cards. This applies to editable import only; it has no effect on faithful-image
   import. The zoom relies on the theme's bundled Bootstrap, so no extra plugin is

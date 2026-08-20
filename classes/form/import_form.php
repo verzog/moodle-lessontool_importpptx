@@ -80,6 +80,7 @@ class import_form extends \moodleform {
         $mform->setDefault('cardgroup', 0);
         $mform->addHelpButton('cardgroup', 'optioncardgroup', 'local_lessonimportpptx');
         $mform->setAdvanced('cardgroup');
+        $mform->hideIf('cardgroup', 'importmode', 'eq', 'images');
 
         // Editable-mode only: keep SmartArt slides (which flatten to a bare list)
         // as faithful rendered images. Only offered when the render backend exists.
@@ -88,6 +89,7 @@ class import_form extends \moodleform {
             $mform->setDefault('smartartimages', 0);
             $mform->addHelpButton('smartartimages', 'optionsmartartimages', 'local_lessonimportpptx');
             $mform->setAdvanced('smartartimages');
+            $mform->hideIf('smartartimages', 'importmode', 'eq', 'images');
         } else {
             $mform->addElement('hidden', 'smartartimages', 0);
         }
@@ -104,12 +106,14 @@ class import_form extends \moodleform {
         $mform->setDefault('bodysize', 0);
         $mform->addHelpButton('bodysize', 'optionbodysize', 'local_lessonimportpptx');
         $mform->setAdvanced('bodysize');
+        $mform->hideIf('bodysize', 'importmode', 'eq', 'images');
 
         $mform->addElement('select', 'adjacentsize', get_string('optionadjacentsize', 'local_lessonimportpptx'), $sizes);
         $mform->setType('adjacentsize', PARAM_INT);
         $mform->setDefault('adjacentsize', 0);
         $mform->addHelpButton('adjacentsize', 'optionadjacentsize', 'local_lessonimportpptx');
         $mform->setAdvanced('adjacentsize');
+        $mform->hideIf('adjacentsize', 'importmode', 'eq', 'images');
 
         $mform->addElement(
             'text',
@@ -121,6 +125,7 @@ class import_form extends \moodleform {
         $mform->setDefault('sectioncolour', '#442980');
         $mform->addHelpButton('sectioncolour', 'optionsectioncolour', 'local_lessonimportpptx');
         $mform->setAdvanced('sectioncolour');
+        $mform->hideIf('sectioncolour', 'importmode', 'eq', 'images');
 
         $mform->addElement('hidden', 'id', $this->_customdata['id']);
         $mform->setType('id', PARAM_INT);

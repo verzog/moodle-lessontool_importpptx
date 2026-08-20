@@ -551,7 +551,15 @@ class html_builder {
      */
     private function render_cell(block $b, int $textsize = 0): string {
         if ($b->type === block::TYPE_IMAGE) {
-            return '<img src="' . $this->register_image($b->content) . '" alt="" class="img-fluid">';
+            $ref = $this->register_image($b->content);
+            if ($this->cardgroup) {
+                // Beside text, a picture also becomes a click-to-enlarge card when
+                // card mode is on (matching a card group); the enclosing column is
+                // the grid cell, so this adds no .col wrapper of its own.
+                [$card, $modal] = $this->build_image_card($ref);
+                return '<div class="local-lessonimportpptx-card">' . $card . '</div>' . $modal;
+            }
+            return '<img src="' . $ref . '" alt="" class="img-fluid">';
         }
         if ($b->type === block::TYPE_HTML) {
             return $b->content;
@@ -761,6 +769,36 @@ class html_builder {
     }
 
     /**
+     * Builds one zoomable image card — its `.card` element and the paired
+     * click-to-enlarge modal — matching the tiny_bootstrap card markup. The
+     * caller supplies the surrounding grid cell, so the same card serves both a
+     * card group (a row of `.col`s) and a lone image beside text (already inside
+     * a column).
+     *
+     * @param string $ref The image @@PLUGINFILE@@ reference.
+     * @param string $caption The card caption inline HTML, or '' for none.
+     * @return array{0: string, 1: string} The card HTML and its modal HTML.
+     */
+    private function build_image_card(string $ref, string $caption = ''): array {
+        // A request-unique id keeps the trigger/modal pair distinct even when
+        // several pages (each built separately) render on one screen — a per-page
+        // counter would repeat and cross-wire the zoom modals.
+        $uid = \html_writer::random_id('lessonImportCard');
+        $enlarge = s(get_string('clicktoenlarge', 'local_lessonimportpptx'));
+        $body = $caption === ''
+            ? ''
+            : '<div class="card-body"><p class="card-text">' . $caption . '</p></div>';
+        $card = '<div class="card h-100">'
+            . '<a href="#" class="tiny-bs-card-img-link" data-bs-toggle="modal" '
+            . 'data-bs-target="#' . $uid . '" title="' . $enlarge . '">'
+            . '<img src="' . $ref . '" class="card-img-top tiny-bs-card-img" '
+            . 'style="cursor:zoom-in;" alt="">'
+            . '</a>' . $body
+            . '</div>';
+        return [$card, $this->render_card_modal($uid, $ref, $caption)];
+    }
+
+    /**
      * Renders a run of images as a Bootstrap 5 card group, matching the markup
      * of the tiny_bootstrap editor plugin: each image becomes a card with a
      * click-to-enlarge zoom modal, and a paired short caption becomes the card
@@ -780,27 +818,13 @@ class html_builder {
         } else if ($count === 3) {
             $rowcols = 'row-cols-1 row-cols-md-3';
         }
-        $enlarge = s(get_string('clicktoenlarge', 'local_lessonimportpptx'));
         $cards = [];
         $modals = [];
         foreach ($imgs as $idx => $ref) {
             $caption = ($caps !== null && isset($caps[$idx])) ? trim($caps[$idx]) : '';
-            // A request-unique id keeps the trigger/modal pair distinct even when
-            // several pages (each built separately) render on one screen — a
-            // per-page counter would repeat and cross-wire the zoom modals.
-            $uid = \html_writer::random_id('lessonImportCard');
-            $body = $caption === ''
-                ? ''
-                : '<div class="card-body"><p class="card-text">' . $caption . '</p></div>';
-            $cards[] = '<div class="col local-lessonimportpptx-card">'
-                . '<div class="card h-100">'
-                . '<a href="#" class="tiny-bs-card-img-link" data-bs-toggle="modal" '
-                . 'data-bs-target="#' . $uid . '" title="' . $enlarge . '">'
-                . '<img src="' . $ref . '" class="card-img-top tiny-bs-card-img" '
-                . 'style="cursor:zoom-in;" alt="">'
-                . '</a>' . $body
-                . '</div></div>';
-            $modals[] = $this->render_card_modal($uid, $ref, $caption);
+            [$card, $modal] = $this->build_image_card($ref, $caption);
+            $cards[] = '<div class="col local-lessonimportpptx-card">' . $card . '</div>';
+            $modals[] = $modal;
         }
         $row = '<div class="row ' . $rowcols . ' g-4 local-lessonimportpptx-cardgroup">'
             . implode('', $cards) . '</div>';
