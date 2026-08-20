@@ -149,6 +149,58 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * With the card-group option on, an image sitting beside text (a column)
+     * becomes a click-to-enlarge card, not a plain picture, while staying in
+     * its column beside the text.
+     */
+    public function test_side_by_side_image_becomes_card_when_card_group_enabled(): void {
+        $builder = new html_builder('#442980', true);
+        $parsed = (object) [
+            'title' => 'Two up',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_TEXT, 2000000, 0, ['Left column paragraph.']),
+                new block(block::TYPE_IMAGE, 2000000, 7000000, 'ppt/media/image1.png'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringContainsString('<p>Left column paragraph.</p>', $out->html);
+        // The image is a zoomable card (trigger + modal), not a plain figure.
+        $this->assertStringContainsString('local-lessonimportpptx-card', $out->html);
+        $this->assertStringContainsString('data-bs-toggle="modal"', $out->html);
+        $this->assertStringContainsString('tiny-bs-card-img', $out->html);
+        $this->assertStringContainsString('@@PLUGINFILE@@/image1.png', $out->html);
+        $this->assertStringNotContainsString(
+            '<img src="@@PLUGINFILE@@/image1.png" alt="" class="img-fluid">',
+            $out->html
+        );
+    }
+
+    /**
+     * Without the card-group option, an image beside text stays a plain picture
+     * with no zoom modal.
+     */
+    public function test_side_by_side_image_stays_plain_without_card_group(): void {
+        $builder = new html_builder('#442980', false);
+        $parsed = (object) [
+            'title' => 'Two up',
+            'section' => null,
+            'blocks' => [
+                new block(block::TYPE_TEXT, 2000000, 0, ['Left column paragraph.']),
+                new block(block::TYPE_IMAGE, 2000000, 7000000, 'ppt/media/image1.png'),
+            ],
+        ];
+        $out = $builder->build($parsed);
+        $this->assertStringContainsString('local-lessonimportpptx-cols', $out->html);
+        $this->assertStringContainsString(
+            '<img src="@@PLUGINFILE@@/image1.png" alt="" class="img-fluid">',
+            $out->html
+        );
+        $this->assertStringNotContainsString('data-bs-toggle="modal"', $out->html);
+    }
+
+    /**
      * A tall image and the text beside it, with different tops but overlapping
      * heights, are laid out side by side (image left) rather than stacked.
      */
@@ -1475,6 +1527,63 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * Runs the private image-dominant detector on a slide built from shape XML.
+     *
+     * @param string $sptree The <spTree> shapes as XML (plain local names).
+     * @return bool The detector's verdict for a standard 16:9 slide.
+     */
+    private function detect_image_dominant(string $sptree): bool {
+        $doc = new \DOMDocument();
+        $doc->loadXML('<sld><cSld><spTree>' . $sptree . '</spTree></cSld></sld>');
+        $method = new \ReflectionMethod(importer::class, 'slide_is_image_dominant');
+        $method->setAccessible(true);
+        return $method->invoke(null, $doc, 12192000 * 6858000);
+    }
+
+    /**
+     * A slide that is one dominant picture with two short labels placed over it
+     * is detected as complex (to be kept as a rendered image).
+     */
+    public function test_image_dominant_slide_with_overlaid_labels_detected(): void {
+        $pic = '<pic><spPr><xfrm><off x="1000000" y="400000"/>'
+            . '<ext cx="10000000" cy="6000000"/></xfrm></spPr></pic>';
+        $label1 = '<sp><spPr><xfrm><off x="2000000" y="1000000"/><ext cx="2000000" cy="500000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Day 1 post-op</t></r></p></txBody></sp>';
+        $label2 = '<sp><spPr><xfrm><off x="7000000" y="5000000"/><ext cx="2000000" cy="500000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Result at 6 weeks</t></r></p></txBody></sp>';
+        $this->assertTrue($this->detect_image_dominant($pic . $label1 . $label2));
+    }
+
+    /**
+     * A picture with its captions below it (not overlapping) is an ordinary
+     * figure, left editable rather than imaged.
+     */
+    public function test_picture_with_caption_below_not_image_dominant(): void {
+        $pic = '<pic><spPr><xfrm><off x="1000000" y="400000"/>'
+            . '<ext cx="10000000" cy="6000000"/></xfrm></spPr></pic>';
+        // Both captions sit below the picture's bottom edge (y > 6400000).
+        $cap1 = '<sp><spPr><xfrm><off x="2000000" y="6600000"/><ext cx="2000000" cy="300000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Caption one</t></r></p></txBody></sp>';
+        $cap2 = '<sp><spPr><xfrm><off x="7000000" y="6600000"/><ext cx="2000000" cy="300000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Caption two</t></r></p></txBody></sp>';
+        $this->assertFalse($this->detect_image_dominant($pic . $cap1 . $cap2));
+    }
+
+    /**
+     * A small picture (below the dominance threshold) with overlapping labels is
+     * not treated as an image-dominant slide.
+     */
+    public function test_small_picture_with_labels_not_image_dominant(): void {
+        $pic = '<pic><spPr><xfrm><off x="1000000" y="1000000"/>'
+            . '<ext cx="2000000" cy="1000000"/></xfrm></spPr></pic>';
+        $label1 = '<sp><spPr><xfrm><off x="1200000" y="1200000"/><ext cx="600000" cy="300000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>A</t></r></p></txBody></sp>';
+        $label2 = '<sp><spPr><xfrm><off x="1400000" y="1400000"/><ext cx="600000" cy="300000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>B</t></r></p></txBody></sp>';
+        $this->assertFalse($this->detect_image_dominant($pic . $label1 . $label2));
+    }
+
+    /**
      * With the SmartArt-images option on, the SmartArt slide (fixture slide 4) is
      * kept as its rendered image while every other slide stays editable.
      */
@@ -1601,8 +1710,56 @@ final class importer_test extends \advanced_testcase {
         $this->assertSame('Presentation Title', $pages[0]->title);
         $this->assertSame('Overview', $pages[1]->title);
         $this->assertSame('Clock', $pages[2]->title);
-        // Slide 9 has no title placeholder, so it falls back to the numbered title.
-        $this->assertSame(get_string('slidetitle', 'local_lessonimportpptx', 9), $pages[3]->title);
+        // Slide 9 has no title placeholder; its short leading heading is promoted
+        // (matching the editable importer) rather than a numbered fallback.
+        $this->assertSame('Short Heading', $pages[3]->title);
+    }
+
+    /**
+     * Runs the private image-backend title extractor on a slide built from XML.
+     *
+     * @param string $sptree The <spTree> shapes as XML (plain local names).
+     * @return string The derived title.
+     */
+    private function image_slide_title(string $sptree): string {
+        $doc = new \DOMDocument();
+        $doc->loadXML('<sld><cSld><spTree>' . $sptree . '</spTree></cSld></sld>');
+        $method = new \ReflectionMethod(\local_lessonimportpptx\office_importer::class, 'slide_title_text');
+        $method->setAccessible(true);
+        return $method->invoke(null, $doc);
+    }
+
+    /**
+     * With no title placeholder, the image backend promotes the topmost short
+     * single-line text box, so a styled heading still names the page.
+     */
+    public function test_image_title_promotes_leading_heading(): void {
+        $heading = '<sp><spPr><xfrm><off x="800000" y="400000"/><ext cx="9000000" cy="900000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Workshop Session 7</t></r></p></txBody></sp>';
+        $body = '<sp><spPr><xfrm><off x="800000" y="2000000"/><ext cx="5000000" cy="3000000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Nose</t></r></p><p><r><t>Anatomy</t></r></p></txBody></sp>';
+        $this->assertSame('Workshop Session 7', $this->image_slide_title($heading . $body));
+    }
+
+    /**
+     * A slide whose leading content is a multi-line body (no short heading) keeps
+     * the numbered fallback: the extractor returns an empty title.
+     */
+    public function test_image_title_falls_back_without_heading(): void {
+        $body = '<sp><spPr><xfrm><off x="800000" y="400000"/><ext cx="9000000" cy="4000000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>First bullet line</t></r></p><p><r><t>Second bullet line</t></r></p></txBody></sp>';
+        $this->assertSame('', $this->image_slide_title($body));
+    }
+
+    /**
+     * A slide that leads with a picture is not titled from a short label lower
+     * down: only the first content block counts, matching the editable importer.
+     */
+    public function test_image_title_ignores_label_below_leading_picture(): void {
+        $pic = '<pic><spPr><xfrm><off x="0" y="0"/><ext cx="9000000" cy="5000000"/></xfrm></spPr></pic>';
+        $label = '<sp><spPr><xfrm><off x="1000000" y="6000000"/><ext cx="2000000" cy="400000"/></xfrm></spPr>'
+            . '<txBody><p><r><t>Figure caption</t></r></p></txBody></sp>';
+        $this->assertSame('', $this->image_slide_title($pic . $label));
     }
 
     /**

@@ -26,6 +26,8 @@ namespace local_lessonimportpptx;
 
 use local_lessonimportpptx\office\renderer;
 use local_lessonimportpptx\pptx\package;
+use local_lessonimportpptx\pptx\slide;
+use local_lessonimportpptx\pptx\html_builder;
 
 /**
  * "Whole deck as images" backend: renders every slide to a faithful image with
@@ -236,18 +238,37 @@ class office_importer {
     }
 
     /**
-     * Extracts the title placeholder's text from a parsed slide document.
+     * Extracts a slide's page title for the image backend.
+     *
+     * Prefers the title placeholder; failing that, promotes the topmost short,
+     * single-line text box, mirroring the editable importer so a styled heading
+     * (a plain text box rather than a title placeholder — e.g. "Workshop Session
+     * 7") still names the page instead of falling back to "Slide N".
      *
      * @param \DOMDocument $doc The parsed slide document.
-     * @return string The title text (empty when the slide has no title placeholder).
+     * @return string The title text (empty when none can be derived).
      */
     private static function slide_title_text(\DOMDocument $doc): string {
         $xpath = new \DOMXPath($doc);
         $query = "//*[local-name()='sp'][.//*[local-name()='ph'][@type='title' or @type='ctrTitle']][1]";
         $sp = $xpath->query($query)->item(0);
-        if (!$sp instanceof \DOMElement) {
-            return '';
+        if ($sp instanceof \DOMElement) {
+            $text = self::shape_line($xpath, $sp);
+            if ($text !== '') {
+                return $text;
+            }
         }
+        return self::promote_leading_line($xpath);
+    }
+
+    /**
+     * Joins a shape's non-empty paragraph text into one whitespace-collapsed line.
+     *
+     * @param \DOMXPath $xpath An xpath bound to the shape's document.
+     * @param \DOMElement $sp The shape element.
+     * @return string The shape's text, collapsed to a single line.
+     */
+    private static function shape_line(\DOMXPath $xpath, \DOMElement $sp): string {
         $lines = [];
         foreach ($xpath->query(".//*[local-name()='p']", $sp) as $paragraph) {
             $line = '';
@@ -259,6 +280,96 @@ class office_importer {
             }
         }
         return trim(preg_replace('/\s+/u', ' ', implode(' ', $lines)));
+    }
+
+    /**
+     * Promotes the topmost short, single-line text box to a title.
+     *
+     * Mirrors html_builder::promote_title: only the slide's leading content block
+     * in reading order is considered. If the topmost block — counting pictures,
+     * tables/diagrams and text boxes alike — is a single short line of text
+     * (longer than a badge, within the title length), it becomes the page title;
+     * anything else (a leading picture, a multi-line body, a long text block)
+     * yields no title, so the caller keeps the numbered fallback. Footer/slide-
+     * number/date furniture and short badge labels are ignored, exactly as the
+     * editable parser drops them before ordering.
+     *
+     * @param \DOMXPath $xpath An xpath bound to the slide document.
+     * @return string The promoted title, or '' when the leading block is not one.
+     */
+    private static function promote_leading_line(\DOMXPath $xpath): string {
+        $skip = ['ftr', 'sldNum', 'dt', 'title', 'ctrTitle'];
+        $blocks = [];
+        // Non-text content (pictures, tables, charts, SmartArt) is never a title,
+        // but it still counts as leading content when it sits above the text.
+        $nontext = "//*[local-name()='pic'] | //*[local-name()='graphicFrame']"
+            . " | //*[local-name()='sp'][.//*[local-name()='blipFill']]";
+        foreach ($xpath->query($nontext) as $shape) {
+            $blocks[] = ['top' => self::shape_top($xpath, $shape), 'title' => null];
+        }
+        // Text boxes: a title candidate only when a single short line.
+        foreach ($xpath->query("//*[local-name()='sp'][not(.//*[local-name()='blipFill'])]") as $sp) {
+            $ph = $xpath->query(".//*[local-name()='ph']", $sp)->item(0);
+            if ($ph instanceof \DOMElement && in_array($ph->getAttribute('type'), $skip, true)) {
+                continue;
+            }
+            $lines = self::shape_paragraphs($xpath, $sp);
+            if (empty($lines)) {
+                continue;
+            }
+            $single = count($lines) === 1;
+            $length = $single ? \core_text::strlen($lines[0]) : 0;
+            // A lone short label is a badge (furniture), dropped like the editable path.
+            if ($single && $length <= slide::BADGE_MAX_CHARS) {
+                continue;
+            }
+            $title = ($single && $length <= html_builder::TITLE_FALLBACK_MAX_CHARS) ? $lines[0] : null;
+            $blocks[] = ['top' => self::shape_top($xpath, $sp), 'title' => $title];
+        }
+        if (empty($blocks)) {
+            return '';
+        }
+        usort($blocks, static function (array $a, array $b): int {
+            return $a['top'] <=> $b['top'];
+        });
+        return (string) ($blocks[0]['title'] ?? '');
+    }
+
+    /**
+     * Returns a shape's non-empty paragraphs, each collapsed to a single line.
+     *
+     * @param \DOMXPath $xpath An xpath bound to the shape's document.
+     * @param \DOMElement $sp The shape element.
+     * @return string[] The shape's non-empty lines, in order.
+     */
+    private static function shape_paragraphs(\DOMXPath $xpath, \DOMElement $sp): array {
+        $lines = [];
+        foreach ($xpath->query(".//*[local-name()='txBody']/*[local-name()='p']", $sp) as $paragraph) {
+            $line = '';
+            foreach ($xpath->query(".//*[local-name()='t']", $paragraph) as $run) {
+                $line .= $run->textContent;
+            }
+            if (trim($line) !== '') {
+                $lines[] = trim(preg_replace('/\s+/u', ' ', $line));
+            }
+        }
+        return $lines;
+    }
+
+    /**
+     * Returns a shape's top edge (EMU) from its transform, or PHP_INT_MAX when the
+     * shape carries no explicit position (so positioned shapes are preferred).
+     *
+     * @param \DOMXPath $xpath An xpath bound to the shape's document.
+     * @param \DOMElement $sp The shape element.
+     * @return int The top offset in EMU, or PHP_INT_MAX when unknown.
+     */
+    private static function shape_top(\DOMXPath $xpath, \DOMElement $sp): int {
+        $off = $xpath->query(".//*[local-name()='xfrm']/*[local-name()='off']", $sp)->item(0);
+        if ($off instanceof \DOMElement && $off->getAttribute('y') !== '') {
+            return (int) $off->getAttribute('y');
+        }
+        return PHP_INT_MAX;
     }
 
     /**

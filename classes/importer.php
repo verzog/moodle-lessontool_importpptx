@@ -133,13 +133,13 @@ class importer {
                 $slidepaths = $package->get_slide_paths();
                 $created = 0;
 
-                // SmartArt diagrams flatten to a bare bullet list in the editable
-                // path; when asked (and able), keep those slides as rendered images.
-                // Render and stage BEFORE the transaction: the LibreOffice pass can
-                // run for a while, and a delegated transaction must not be held open
-                // across it.
+                // Some slides do not survive the trip to editable HTML (SmartArt,
+                // and a dominant picture overlaid with caption labels); when asked
+                // (and able), keep those slides as rendered images. Render and
+                // stage BEFORE the transaction: the LibreOffice pass can run for a
+                // while, and a delegated transaction must not be held open across it.
                 $stagedir = make_request_directory();
-                $slideimages = $this->smartart_slide_images($pptx, $package, $slidepaths, $maxdim, $stagedir);
+                $slideimages = $this->complex_slide_images($pptx, $package, $slidepaths, $maxdim, $stagedir);
 
                 $transaction = $DB->start_delegated_transaction();
                 try {
@@ -180,24 +180,26 @@ class importer {
     }
 
     /**
-     * Renders each SmartArt-bearing slide to a faithful image staged on disk,
-     * keyed by slide index.
+     * Renders each "complex" slide — one that does not survive the trip to
+     * editable HTML — to a faithful image staged on disk, keyed by slide index.
      *
-     * SmartArt diagrams flatten to a bare bullet list in the editable path, losing
-     * their meaning, so when the option is on and the LibreOffice render backend is
-     * available they are kept as images instead. The backend renders each visible
-     * slide to a numbered page (hidden slides are skipped), so slide indices are
-     * mapped to page numbers by counting visible slides. Each wanted page's bytes
-     * are written to a staged file for page_writer to save.
+     * Two kinds of slide are kept as images when the option is on and the
+     * LibreOffice render backend is available: a slide carrying a SmartArt
+     * diagram (which otherwise flattens to a bare bullet list), and a slide that
+     * is a single dominant picture overlaid with caption labels (which otherwise
+     * lose those labels to orphaned lines below the image). The backend renders
+     * each visible slide to a numbered page (hidden slides are skipped), so slide
+     * indices are mapped to page numbers by counting visible slides. Each wanted
+     * page's bytes are written to a staged file for page_writer to save.
      *
      * @param \stored_file $pptx The uploaded presentation.
      * @param package $package The open package (source of slide XML).
      * @param string[] $slidepaths The slide part paths, in order.
      * @param int $maxdim Maximum image dimension in px (0 keeps the rendered size).
      * @param string $stagedir A writable directory for staged image files.
-     * @return array Map of slide index to [filename, stagedpath] for SmartArt slides.
+     * @return array Map of slide index to [filename, stagedpath] for kept slides.
      */
-    private function smartart_slide_images(
+    private function complex_slide_images(
         \stored_file $pptx,
         package $package,
         array $slidepaths,
@@ -213,8 +215,9 @@ class importer {
         if ($renderer === null) {
             return [];
         }
-        // Which visible slides carry SmartArt, keyed by their 1-based render page.
-        // A hidden SmartArt slide (show="0") cannot be imaged — the renderer omits
+        $slidearea = $package->slide_width() * $package->slide_height();
+        // Which visible slides are complex, keyed by their 1-based render page.
+        // A hidden complex slide (show="0") cannot be imaged — the renderer omits
         // it from the render — so it keeps its editable (flattened) content.
         $wanted = [];
         $visible = 0;
@@ -224,7 +227,7 @@ class importer {
                 continue;
             }
             $visible++;
-            if (self::slide_has_smartart($doc)) {
+            if (self::slide_has_smartart($doc) || self::slide_is_image_dominant($doc, $slidearea)) {
                 $wanted[$visible] = $index;
             }
         }
@@ -277,6 +280,93 @@ class importer {
         }
         $xpath = new \DOMXPath($doc);
         return $xpath->query("//*[local-name()='graphicFrame']//*[@*[local-name()='dm']]")->length > 0;
+    }
+
+    /**
+     * Whether a slide is a single dominant picture overlaid with caption labels.
+     *
+     * Such a slide (for example a composite figure with "before / after" photos
+     * and small labels placed over regions of the picture) reads far better kept
+     * as its rendered image: flattening it drops the geometrically-positioned
+     * labels into orphaned lines below the picture. The test is deliberately
+     * tight to leave ordinary photo-and-caption slides editable: the largest
+     * picture must cover at least 40% of the slide, and at least two short,
+     * caption-length text boxes must overlap that picture's box.
+     *
+     * @param \DOMDocument|null $doc The parsed slide document, or null.
+     * @param int $slidearea The slide area in EMU² (0 when unknown).
+     * @return bool True if the slide is a picture overlaid with caption labels.
+     */
+    private static function slide_is_image_dominant(?\DOMDocument $doc, int $slidearea): bool {
+        if ($doc === null || $slidearea <= 0) {
+            return false;
+        }
+        $xpath = new \DOMXPath($doc);
+        // Pictures: a <p:pic>, or a shape filled with a picture (blipFill).
+        $pics = $xpath->query("//*[local-name()='pic'] | //*[local-name()='sp'][.//*[local-name()='blipFill']]");
+        $biggest = null;
+        $biggestarea = 0;
+        foreach ($pics as $pic) {
+            $box = self::shape_box($xpath, $pic);
+            if ($box !== null && $box[2] * $box[3] > $biggestarea) {
+                $biggestarea = $box[2] * $box[3];
+                $biggest = $box;
+            }
+        }
+        if ($biggest === null || $biggestarea * 100 < $slidearea * 40) {
+            return false;
+        }
+        // Count short (caption-length) text boxes overlapping the dominant picture.
+        $overlaid = 0;
+        foreach ($xpath->query("//*[local-name()='sp'][not(.//*[local-name()='blipFill'])]") as $sp) {
+            $text = trim($sp->textContent);
+            if ($text === '' || \core_text::strlen($text) > 60) {
+                continue;
+            }
+            $box = self::shape_box($xpath, $sp);
+            if ($box !== null && self::boxes_overlap($box, $biggest)) {
+                $overlaid++;
+            }
+        }
+        return $overlaid >= 2;
+    }
+
+    /**
+     * Reads a shape's bounding box (x, y, cx, cy in EMU) from its first xfrm.
+     *
+     * @param \DOMXPath $xpath An xpath bound to the shape's document.
+     * @param \DOMNode $shape The shape element.
+     * @return int[]|null [x, y, cx, cy], or null when no positive-sized box is set.
+     */
+    private static function shape_box(\DOMXPath $xpath, \DOMNode $shape): ?array {
+        $xfrm = $xpath->query(".//*[local-name()='xfrm'][1]", $shape)->item(0);
+        if ($xfrm === null) {
+            return null;
+        }
+        $off = $xpath->query("./*[local-name()='off']", $xfrm)->item(0);
+        $ext = $xpath->query("./*[local-name()='ext']", $xfrm)->item(0);
+        if ($off === null || $ext === null) {
+            return null;
+        }
+        $cx = (int) $ext->getAttribute('cx');
+        $cy = (int) $ext->getAttribute('cy');
+        if ($cx <= 0 || $cy <= 0) {
+            return null;
+        }
+        return [(int) $off->getAttribute('x'), (int) $off->getAttribute('y'), $cx, $cy];
+    }
+
+    /**
+     * Whether two [x, y, cx, cy] boxes share a positive overlap area.
+     *
+     * @param int[] $a A box as [x, y, cx, cy].
+     * @param int[] $b A box as [x, y, cx, cy].
+     * @return bool True when the boxes overlap.
+     */
+    private static function boxes_overlap(array $a, array $b): bool {
+        $ox = min($a[0] + $a[2], $b[0] + $b[2]) - max($a[0], $b[0]);
+        $oy = min($a[1] + $a[3], $b[1] + $b[3]) - max($a[1], $b[1]);
+        return $ox > 0 && $oy > 0;
     }
 
     /**

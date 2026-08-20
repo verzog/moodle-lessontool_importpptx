@@ -114,10 +114,25 @@ page-by-page copy and PowerPoint import when you want editable text.
   `pdftoppm`) and the `gd` extension. When they are absent the PDF option simply
   does not appear.
 - **Optional, for rendering slides as images** — the "faithful images" import
-  mode and the "keep SmartArt slides as images" option — both **LibreOffice**
+  mode and the "keep complex slides as images" option — both **LibreOffice**
   (headless `soffice`) *and* the `poppler-utils` binaries: the deck is converted
   to PDF by LibreOffice and rasterised by poppler. Each of those two options is
   offered only when both are present.
+
+### Feature availability by dependency
+
+The core PowerPoint → editable import is pure PHP and always works. Three
+features depend on external binaries:
+
+| Feature | Requires | If the binaries are missing |
+|---|---|---|
+| PowerPoint → editable import | — (pure PHP) | ✅ always available |
+| PDF import | Poppler | ❌ option hidden |
+| Faithful image import | LibreOffice + Poppler | ❌ option hidden |
+| Keep complex slides as images | LibreOffice + Poppler | ❌ option hidden |
+
+The import form shows this same list for the current server as a live tick/cross
+read-out, naming any missing binary (for example "requires LibreOffice").
 
 ## Installation
 
@@ -157,7 +172,11 @@ the tools are absent the option simply does not appear and import stays editable
 ## Import options
 
 The tunable options live on the import form itself, under **Show more**, so each
-deck can be imported with its own values:
+deck can be imported with its own values. When **Import as** is set to *Faithful
+images*, the options that only shape editable content — card group,
+SmartArt-as-images, the text sizes and the section colour — are hidden, since
+they have no effect on rendered slide images; only **Maximum image dimension**
+applies to both modes:
 
 - **Maximum image dimension (px)** — down-scale images on import (`0` keeps
   originals). Default 1600.
@@ -168,18 +187,23 @@ deck can be imported with its own values:
   the [`tiny_bootstrap`](https://github.com/verzog/moodle-tiny_bootstrap) editor
   plugin inserts — instead of the plain image grid. Every picture becomes a card
   with a click-to-enlarge zoom, and a paired short caption becomes the card
-  text. A slide holding a single picture is always shown as a centred,
+  text. A picture that sits beside text in a column also becomes a zoomable
+  card, so the pop-up zoom is not lost when an image shares a row with text. A
+  page holding a single picture on its own is still shown as a centred,
   height-capped figure rather than a one-card group. Reconstructed diagrams
   (SmartArt and shape flows) are never turned into cards. This applies to editable import only; it has no effect on faithful-image
   import. The zoom relies on the theme's bundled Bootstrap, so no extra plugin is
   needed to view the result — though `tiny_bootstrap` lets a teacher keep editing
   the cards afterwards.
-- **Keep SmartArt slides as images** — off by default, and shown only when the
-  LibreOffice render backend is available. SmartArt diagrams cannot become
-  editable text without losing their meaning (they flatten to a bare bullet
-  list), so with this on any slide containing SmartArt is kept as a faithful
-  rendered image while every other slide stays editable. Applies to the editable
-  import only.
+- **Keep complex slides as images** — off by default, and shown only when the
+  LibreOffice render backend is available. Some slides do not survive the trip
+  to editable text: a SmartArt diagram flattens to a bare bullet list, and a
+  slide that is a single large picture with caption labels positioned *over* it
+  loses those labels to orphaned lines below the image. With this on, those
+  slides are kept as faithful rendered images instead — any slide containing
+  SmartArt, and any slide that is a single dominant picture (≥40% of the slide)
+  overlaid with two or more short caption labels — while every other slide stays
+  editable. Applies to the editable import only.
 
 Access to the importer is controlled by the `local/lessonimportpptx:import`
 capability (allowed for editing teachers and managers by default). The
