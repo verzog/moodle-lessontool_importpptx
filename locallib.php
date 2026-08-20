@@ -67,6 +67,7 @@ function local_lessonimportpptx_process(
             'cardgroup' => (int) !empty($options['cardgroup']),
             'bodysize' => (int) ($options['bodysize'] ?? 0),
             'adjacentsize' => (int) ($options['adjacentsize'] ?? 0),
+            'smartartimages' => (int) !empty($options['smartartimages']),
         ]);
         $task->set_userid($USER->id);
         \core\task\manager::queue_adhoc_task($task);

@@ -73,6 +73,7 @@ class import_task extends \core\task\adhoc_task {
             'cardgroup' => !empty($data->cardgroup),
             'bodysize' => (int) ($data->bodysize ?? 0),
             'adjacentsize' => (int) ($data->adjacentsize ?? 0),
+            'smartartimages' => !empty($data->smartartimages),
         ];
 
         // Do not delete the staged upload in a finally: if the import throws on a

@@ -1475,6 +1475,88 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * With the SmartArt-images option on, the SmartArt slide (fixture slide 4) is
+     * kept as its rendered image while every other slide stays editable.
+     */
+    public function test_smartart_slide_kept_as_image_when_enabled(): void {
+        global $DB;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $course = $this->getDataGenerator()->create_course();
+        $lesson = $this->getDataGenerator()->create_module('lesson', ['course' => $course->id]);
+        $context = \context_module::instance($lesson->cmid);
+        $record = $DB->get_record('lesson', ['id' => $lesson->id], '*', MUST_EXIST);
+
+        // A stub renderer yields one page per visible slide (the fixture has nine).
+        $renderer = new class extends \local_lessonimportpptx\office\renderer {
+            /**
+             * Yields one fixed page per fixture slide.
+             *
+             * @param \stored_file $pptx The (ignored) uploaded presentation.
+             * @param int $maxdim The (ignored) maximum image dimension.
+             * @return \Generator Yields [slidenumber, filename, bytes] arrays.
+             */
+            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+                for ($p = 1; $p <= 9; $p++) {
+                    yield [$p, 'slide-' . $p . '.png', 'PNG' . $p];
+                }
+            }
+        };
+        $file = $this->make_stored_file($record->id, $context);
+        $importer = new importer($record, $context, ['smartartimages' => true], $renderer);
+        $this->assertSame(9, $importer->import($file));
+
+        $pages = array_values($DB->get_records('lesson_pages', ['lessonid' => $record->id], 'id ASC'));
+        // Slide 4 is the SmartArt slide: kept as its rendered image, not a list.
+        $this->assertStringContainsString('@@PLUGINFILE@@/slide-4.png', $pages[3]->contents);
+        $this->assertStringNotContainsString('<ul>', $pages[3]->contents);
+        $fs = get_file_storage();
+        $this->assertTrue($fs->file_exists(
+            $context->id, 'mod_lesson', 'page_contents', $pages[3]->id, '/', 'slide-4.png'
+        ));
+        // A non-SmartArt slide keeps its editable content (slide 2's image).
+        $this->assertStringContainsString('@@PLUGINFILE@@/image1.png', $pages[1]->contents);
+    }
+
+    /**
+     * Without the option, a SmartArt slide stays editable (flattened to a list),
+     * and the render backend is never invoked.
+     */
+    public function test_smartart_slide_stays_editable_by_default(): void {
+        global $DB;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        $course = $this->getDataGenerator()->create_course();
+        $lesson = $this->getDataGenerator()->create_module('lesson', ['course' => $course->id]);
+        $context = \context_module::instance($lesson->cmid);
+        $record = $DB->get_record('lesson', ['id' => $lesson->id], '*', MUST_EXIST);
+
+        // A renderer that fails the test if it is ever asked to render.
+        $renderer = new class extends \local_lessonimportpptx\office\renderer {
+            /**
+             * Never called: the option is off, so no slide is imaged.
+             *
+             * @param \stored_file $pptx The uploaded presentation.
+             * @param int $maxdim The maximum image dimension.
+             * @return \Generator Yields nothing.
+             */
+            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+                throw new \coding_exception('renderer must not run when the option is off');
+                yield;
+            }
+        };
+        $file = $this->make_stored_file($record->id, $context);
+        $importer = new importer($record, $context, ['smartartimages' => false], $renderer);
+        $this->assertSame(9, $importer->import($file));
+
+        $pages = array_values($DB->get_records('lesson_pages', ['lessonid' => $record->id], 'id ASC'));
+        $this->assertStringContainsString('<ul>', $pages[3]->contents);
+        $this->assertStringNotContainsString('slide-4.png', $pages[3]->contents);
+    }
+
+    /**
      * The image backend's raw slide counter counts slide parts from the archive,
      * without invoking the editable parser.
      */
