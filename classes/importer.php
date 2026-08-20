@@ -27,6 +27,7 @@ namespace local_lessonimportpptx;
 use local_lessonimportpptx\pptx\package;
 use local_lessonimportpptx\pptx\slide;
 use local_lessonimportpptx\pptx\html_builder;
+use local_lessonimportpptx\office\renderer;
 
 /**
  * Reads a .pptx and creates one lesson content page per slide, in slide order.
@@ -57,15 +58,28 @@ class importer {
     /** @var int Point size forced on text beside an image (0 keeps the slide's own sizes). */
     private int $adjacentsize;
 
+    /** @var bool Whether SmartArt slides are kept as rendered images rather than flattened. */
+    private bool $smartartimages;
+
+    /** @var renderer|null The slide-image render backend (injectable for testing). */
+    private ?renderer $renderer;
+
     /**
      * Constructor.
      *
      * @param \stdClass $lesson The lesson activity record.
      * @param \context_module $context The lesson's module context.
      * @param array $options Import options: 'sectioncolour' (string), 'imagemaxdim'
-     *                       (int) and 'cardgroup' (bool).
+     *                       (int), 'cardgroup' (bool), 'bodysize' (int pt),
+     *                       'adjacentsize' (int pt) and 'smartartimages' (bool).
+     * @param renderer|null $renderer The image render backend, or null for the default.
      */
-    public function __construct(\stdClass $lesson, \context_module $context, array $options = []) {
+    public function __construct(
+        \stdClass $lesson,
+        \context_module $context,
+        array $options = [],
+        ?renderer $renderer = null
+    ) {
         $this->lesson = $lesson;
         $this->context = $context;
         $colour = (string) ($options['sectioncolour'] ?? '#442980');
@@ -74,6 +88,8 @@ class importer {
         $this->cardgroup = !empty($options['cardgroup']);
         $this->bodysize = max(0, (int) ($options['bodysize'] ?? 0));
         $this->adjacentsize = max(0, (int) ($options['adjacentsize'] ?? 0));
+        $this->smartartimages = !empty($options['smartartimages']);
+        $this->renderer = $renderer;
     }
 
     /**
@@ -117,6 +133,14 @@ class importer {
                 $slidepaths = $package->get_slide_paths();
                 $created = 0;
 
+                // SmartArt diagrams flatten to a bare bullet list in the editable
+                // path; when asked (and able), keep those slides as rendered images.
+                // Render and stage BEFORE the transaction: the LibreOffice pass can
+                // run for a while, and a delegated transaction must not be held open
+                // across it.
+                $stagedir = make_request_directory();
+                $slideimages = $this->smartart_slide_images($pptx, $package, $slidepaths, $maxdim, $stagedir);
+
                 $transaction = $DB->start_delegated_transaction();
                 try {
                     foreach ($slidepaths as $index => $slidepath) {
@@ -128,7 +152,15 @@ class importer {
                             $title = get_string('slidetitle', 'local_lessonimportpptx', $index + 1);
                         }
 
-                        $this->write_page($package, $title, $page->html, $page->images, $maxdim);
+                        if (isset($slideimages[$index])) {
+                            // Keep this SmartArt slide as its rendered image.
+                            [$filename, $filepath] = $slideimages[$index];
+                            $html = '<img src="@@PLUGINFILE@@/' . $filename . '" alt="' . s($title)
+                                . '" class="img-fluid">';
+                            page_writer::write($this->lesson, $this->context, $title, $html, [$filename => $filepath]);
+                        } else {
+                            $this->write_page($package, $title, $page->html, $page->images, $maxdim);
+                        }
                         $created++;
                     }
 
@@ -145,6 +177,106 @@ class importer {
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * Renders each SmartArt-bearing slide to a faithful image staged on disk,
+     * keyed by slide index.
+     *
+     * SmartArt diagrams flatten to a bare bullet list in the editable path, losing
+     * their meaning, so when the option is on and the LibreOffice render backend is
+     * available they are kept as images instead. The backend renders each visible
+     * slide to a numbered page (hidden slides are skipped), so slide indices are
+     * mapped to page numbers by counting visible slides. Each wanted page's bytes
+     * are written to a staged file for page_writer to save.
+     *
+     * @param \stored_file $pptx The uploaded presentation.
+     * @param package $package The open package (source of slide XML).
+     * @param string[] $slidepaths The slide part paths, in order.
+     * @param int $maxdim Maximum image dimension in px (0 keeps the rendered size).
+     * @param string $stagedir A writable directory for staged image files.
+     * @return array Map of slide index to [filename, stagedpath] for SmartArt slides.
+     */
+    private function smartart_slide_images(
+        \stored_file $pptx,
+        package $package,
+        array $slidepaths,
+        int $maxdim,
+        string $stagedir
+    ): array {
+        // Check the option before probing the renderer: an ordinary editable
+        // import must not pay the LibreOffice availability probe.
+        if (!$this->smartartimages) {
+            return [];
+        }
+        $renderer = $this->renderer ?? (renderer::is_available() ? new renderer() : null);
+        if ($renderer === null) {
+            return [];
+        }
+        // Which visible slides carry SmartArt, keyed by their 1-based render page.
+        // A hidden SmartArt slide (show="0") cannot be imaged — the renderer omits
+        // it from the render — so it keeps its editable (flattened) content.
+        $wanted = [];
+        $visible = 0;
+        foreach ($slidepaths as $index => $slidepath) {
+            $doc = $package->get_xml($slidepath);
+            if (self::slide_is_hidden($doc)) {
+                continue;
+            }
+            $visible++;
+            if (self::slide_has_smartart($doc)) {
+                $wanted[$visible] = $index;
+            }
+        }
+        // The render backend caps at MAX_PAGES; the editable parser allows more
+        // slides. If the whole-deck render would be refused, skip imaging so the
+        // import still succeeds (SmartArt slides fall back to flattened content).
+        if (empty($wanted) || $visible > pdf\renderer::MAX_PAGES) {
+            return [];
+        }
+        $images = [];
+        foreach ($renderer->render_pages($pptx, $maxdim) as [$rendered, $filename, $bytes]) {
+            if (!isset($wanted[$rendered])) {
+                continue;
+            }
+            $file = $stagedir . '/smartart-' . $rendered;
+            if (file_put_contents($file, $bytes) === false) {
+                throw new \moodle_exception('errorofficerender', 'local_lessonimportpptx');
+            }
+            $images[$wanted[$rendered]] = [$filename, $file];
+        }
+        return $images;
+    }
+
+    /**
+     * Whether a slide is hidden (p:sld show="0"), which the renderer skips.
+     *
+     * @param \DOMDocument|null $doc The parsed slide document, or null.
+     * @return bool True if the slide is marked hidden.
+     */
+    private static function slide_is_hidden(?\DOMDocument $doc): bool {
+        if ($doc === null) {
+            return false;
+        }
+        $root = $doc->documentElement;
+        return $root instanceof \DOMElement && $root->getAttribute('show') === '0';
+    }
+
+    /**
+     * Whether a slide carries a SmartArt diagram.
+     *
+     * SmartArt is a graphicFrame holding a diagram data-model relationship (r:dm);
+     * charts (r:id) and tables (a:tbl) do not, so they are not matched.
+     *
+     * @param \DOMDocument|null $doc The parsed slide document, or null.
+     * @return bool True if the slide contains a SmartArt diagram.
+     */
+    private static function slide_has_smartart(?\DOMDocument $doc): bool {
+        if ($doc === null) {
+            return false;
+        }
+        $xpath = new \DOMXPath($doc);
+        return $xpath->query("//*[local-name()='graphicFrame']//*[@*[local-name()='dm']]")->length > 0;
     }
 
     /**
