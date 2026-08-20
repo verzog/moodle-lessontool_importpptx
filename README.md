@@ -180,12 +180,15 @@ applies to both modes:
   import. The zoom relies on the theme's bundled Bootstrap, so no extra plugin is
   needed to view the result — though `tiny_bootstrap` lets a teacher keep editing
   the cards afterwards.
-- **Keep SmartArt slides as images** — off by default, and shown only when the
-  LibreOffice render backend is available. SmartArt diagrams cannot become
-  editable text without losing their meaning (they flatten to a bare bullet
-  list), so with this on any slide containing SmartArt is kept as a faithful
-  rendered image while every other slide stays editable. Applies to the editable
-  import only.
+- **Keep complex slides as images** — off by default, and shown only when the
+  LibreOffice render backend is available. Some slides do not survive the trip
+  to editable text: a SmartArt diagram flattens to a bare bullet list, and a
+  slide that is a single large picture with caption labels positioned *over* it
+  loses those labels to orphaned lines below the image. With this on, those
+  slides are kept as faithful rendered images instead — any slide containing
+  SmartArt, and any slide that is a single dominant picture (≥40% of the slide)
+  overlaid with two or more short caption labels — while every other slide stays
+  editable. Applies to the editable import only.
 
 Access to the importer is controlled by the `local/lessonimportpptx:import`
 capability (allowed for editing teachers and managers by default). The
