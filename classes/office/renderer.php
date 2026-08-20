@@ -52,6 +52,9 @@ class renderer {
     /** @var bool|null Cached availability result for this request. */
     private static ?bool $available = null;
 
+    /** @var bool|null Cached LibreOffice-only availability for this request. */
+    private static ?bool $sofficeavailable = null;
+
     /**
      * Whether the tools needed to render slides to images are usable.
      *
@@ -101,6 +104,32 @@ class renderer {
                 $lock->release();
             }
         }
+    }
+
+    /**
+     * Whether the LibreOffice binary alone can be executed.
+     *
+     * Split out from {@see self::is_available()} (which also requires poppler) so
+     * the import form can tell the two backends apart and report which binary is
+     * missing. Cached per host and per request on the same terms as the combined
+     * probe; no lock is taken, as a single-binary form-load probe is cheap enough
+     * that serialising it is not worth the coordination.
+     *
+     * @return bool True if the soffice binary can be run.
+     */
+    public static function libreoffice_available(): bool {
+        if (self::$sofficeavailable !== null) {
+            return self::$sofficeavailable;
+        }
+        $cached = get_config('local_lessonimportpptx', self::cache_key('sofficeavailable'));
+        $checked = (int) get_config('local_lessonimportpptx', self::cache_key('sofficeavailablecheck'));
+        if ($cached !== false && (time() - $checked) < self::AVAILABLE_TTL) {
+            return self::$sofficeavailable = (bool) (int) $cached;
+        }
+        self::$sofficeavailable = self::can_run_soffice();
+        set_config(self::cache_key('sofficeavailable'), self::$sofficeavailable ? 1 : 0, 'local_lessonimportpptx');
+        set_config(self::cache_key('sofficeavailablecheck'), time(), 'local_lessonimportpptx');
+        return self::$sofficeavailable;
     }
 
     /**

@@ -114,10 +114,25 @@ page-by-page copy and PowerPoint import when you want editable text.
   `pdftoppm`) and the `gd` extension. When they are absent the PDF option simply
   does not appear.
 - **Optional, for rendering slides as images** — the "faithful images" import
-  mode and the "keep SmartArt slides as images" option — both **LibreOffice**
+  mode and the "keep complex slides as images" option — both **LibreOffice**
   (headless `soffice`) *and* the `poppler-utils` binaries: the deck is converted
   to PDF by LibreOffice and rasterised by poppler. Each of those two options is
   offered only when both are present.
+
+### Feature availability by dependency
+
+The core PowerPoint → editable import is pure PHP and always works. Three
+features depend on external binaries:
+
+| Feature | Requires | If the binaries are missing |
+|---|---|---|
+| PowerPoint → editable import | — (pure PHP) | ✅ always available |
+| PDF import | Poppler | ❌ option hidden |
+| Faithful image import | LibreOffice + Poppler | ❌ option hidden |
+| Keep complex slides as images | LibreOffice + Poppler | ❌ option hidden |
+
+The import form shows this same list for the current server as a live tick/cross
+read-out, naming any missing binary (for example "requires LibreOffice").
 
 ## Installation
 

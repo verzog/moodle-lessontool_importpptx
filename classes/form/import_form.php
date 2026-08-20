@@ -51,6 +51,10 @@ class import_form extends \moodleform {
         $mform->addRule('pptxfile', null, 'required', null, 'client');
         $mform->addHelpButton('pptxfile', $labelkey, 'local_lessonimportpptx');
 
+        // A quick read-out of which rendering features this server can offer, and
+        // the binary any unavailable one still needs.
+        $mform->addElement('static', 'availability', '', $this->availability_html());
+
         // How to import: editable HTML, or faithful slide images (LibreOffice).
         // The image mode is only offered when the render backend is available.
         if (!empty($this->_customdata['officeenabled'])) {
@@ -131,5 +135,69 @@ class import_form extends \moodleform {
         $mform->setType('id', PARAM_INT);
 
         $this->add_action_buttons(true, get_string('import', 'local_lessonimportpptx'));
+    }
+
+    /**
+     * Builds the "rendering features on this server" read-out shown on the form.
+     *
+     * Lists the three binary-dependent features, each with a tick or cross, and —
+     * when a feature is unavailable — the binaries it still needs.
+     *
+     * @return string The panel HTML.
+     */
+    private function availability_html(): string {
+        $poppler = !empty($this->_customdata['popplerenabled']);
+        $libreoffice = !empty($this->_customdata['libreofficeenabled']);
+        // Missing binaries for the two features that need LibreOffice and poppler.
+        $imagemissing = [];
+        if (!$libreoffice) {
+            $imagemissing[] = 'LibreOffice';
+        }
+        if (!$poppler) {
+            $imagemissing[] = 'Poppler';
+        }
+        $rows = $this->availability_row(
+            get_string('availabilitypdf', 'local_lessonimportpptx'),
+            $poppler,
+            $poppler ? [] : ['Poppler']
+        );
+        $rows .= $this->availability_row(
+            get_string('availabilityfaithful', 'local_lessonimportpptx'),
+            $poppler && $libreoffice,
+            $imagemissing
+        );
+        $rows .= $this->availability_row(
+            get_string('availabilitycomplex', 'local_lessonimportpptx'),
+            $poppler && $libreoffice,
+            $imagemissing
+        );
+        return '<div class="local-lessonimportpptx-availability mb-2">'
+            . '<p class="fw-bold mb-1">' . get_string('availabilityheading', 'local_lessonimportpptx') . '</p>'
+            . '<ul class="list-unstyled mb-0">' . $rows . '</ul></div>';
+    }
+
+    /**
+     * Renders one availability row: a tick or cross, the feature name, and any
+     * missing binaries.
+     *
+     * @param string $label The feature's display name.
+     * @param bool $available Whether the feature can run on this server.
+     * @param string[] $missing The binaries the feature still needs (empty if available).
+     * @return string The row's list-item HTML.
+     */
+    private function availability_row(string $label, bool $available, array $missing): string {
+        if ($available) {
+            $status = get_string('availabilityyes', 'local_lessonimportpptx');
+            $mark = '<span class="text-success" aria-hidden="true">&#10004;</span>';
+            $note = '';
+        } else {
+            $status = get_string('availabilityno', 'local_lessonimportpptx');
+            $mark = '<span class="text-danger" aria-hidden="true">&#10008;</span>';
+            $note = ' <span class="text-muted">&mdash; '
+                . get_string('availabilityrequires', 'local_lessonimportpptx', implode(' + ', $missing))
+                . '</span>';
+        }
+        return '<li>' . $mark . ' <span class="visually-hidden">' . $status . ': </span>'
+            . s($label) . $note . '</li>';
     }
 }
