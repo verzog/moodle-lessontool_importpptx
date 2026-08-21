@@ -74,6 +74,7 @@ class import_task extends \core\task\adhoc_task {
             'bodysize' => (int) ($data->bodysize ?? 0),
             'adjacentsize' => (int) ($data->adjacentsize ?? 0),
             'smartartimages' => !empty($data->smartartimages),
+            'renderfont' => (string) ($data->renderfont ?? ''),
         ];
 
         // Do not delete the staged upload in a finally: if the import throws on a

@@ -204,6 +204,16 @@ applies to both modes:
   SmartArt, and any slide that is a single dominant picture (≥40% of the slide)
   overlaid with two or more short caption labels — while every other slide stays
   editable. Applies to the editable import only.
+- **Render font** — *Keep original* by default, and shown only when the
+  LibreOffice render backend is available. Slides are rasterised by LibreOffice,
+  which substitutes any font the server does not have; a metric-incompatible
+  substitute can make text overflow the deck's fixed-size boxes (common with
+  decks in **Aptos**, Office's current default, or **Calibri**). Choosing a font
+  here rewrites every text font in the deck to that one family *before*
+  rendering, so the render uses a font you know is installed and sized to fit —
+  `Carlito` matches Calibri/Aptos metrics and is the usual pick. It affects only
+  the rendered slide images, never the editable text, and the chosen font must be
+  installed where LibreOffice runs (e.g. `apt install fonts-crosextra-carlito`).
 
 Access to the importer is controlled by the `local/lessonimportpptx:import`
 capability (allowed for editing teachers and managers by default). The

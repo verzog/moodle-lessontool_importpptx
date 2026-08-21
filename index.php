@@ -102,6 +102,7 @@ if (optional_param('confirm', 0, PARAM_BOOL) && confirm_sesskey()) {
         'bodysize' => optional_param('bodysize', 0, PARAM_INT),
         'adjacentsize' => optional_param('adjacentsize', 0, PARAM_INT),
         'smartartimages' => optional_param('smartartimages', 0, PARAM_BOOL),
+        'renderfont' => optional_param('renderfont', '', PARAM_TEXT),
     ];
     $result = local_lessonimportpptx_process($file, $lesson, $context, $cm, $pendingid, $options);
     if ($result->queued) {
@@ -163,6 +164,7 @@ if ($data = $mform->get_data()) {
         'bodysize' => (int) ($data->bodysize ?? 0),
         'adjacentsize' => (int) ($data->adjacentsize ?? 0),
         'smartartimages' => (int) !empty($data->smartartimages),
+        'renderfont' => (string) ($data->renderfont ?? ''),
     ]);
     $cancelurl = new moodle_url($PAGE->url, ['id' => $cm->id, 'cancelpending' => $pendingid]);
     echo $OUTPUT->header();

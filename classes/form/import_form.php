@@ -99,6 +99,23 @@ class import_form extends \moodleform {
         }
         $mform->setType('smartartimages', PARAM_BOOL);
 
+        // Render backend only: force a font on slides that are rendered to images
+        // (faithful mode or kept SmartArt/complex slides), so a deck whose own
+        // font is missing from the server does not overflow its text boxes.
+        if (!empty($this->_customdata['officeenabled'])) {
+            $fonts = ['' => get_string('renderfontkeep', 'local_lessonimportpptx')];
+            foreach (\local_lessonimportpptx\office\renderer::RENDER_FONTS as $family) {
+                $fonts[$family] = $family;
+            }
+            $mform->addElement('select', 'renderfont', get_string('optionrenderfont', 'local_lessonimportpptx'), $fonts);
+            $mform->setDefault('renderfont', '');
+            $mform->addHelpButton('renderfont', 'optionrenderfont', 'local_lessonimportpptx');
+            $mform->setAdvanced('renderfont');
+        } else {
+            $mform->addElement('hidden', 'renderfont', '');
+        }
+        $mform->setType('renderfont', PARAM_TEXT);
+
         // Editable-mode only: force a point size on body text and on text that
         // sits beside an image, overriding the sizes carried over from the slide.
         $sizes = [0 => get_string('fontsizekeep', 'local_lessonimportpptx')];
