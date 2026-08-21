@@ -1501,9 +1501,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The (ignored) uploaded presentation.
              * @param int $maxdim The (ignored) maximum image dimension.
+             * @param string $renderfont The (ignored) render font.
              * @return \Generator Yields [slidenumber, filename, bytes] arrays.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 yield [1, 'page-1.png', 'PNGONE'];
                 yield [2, 'page-2.png', 'PNGTWO'];
             }
@@ -1604,9 +1605,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The (ignored) uploaded presentation.
              * @param int $maxdim The (ignored) maximum image dimension.
+             * @param string $renderfont The (ignored) render font.
              * @return \Generator Yields [slidenumber, filename, bytes] arrays.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 for ($p = 1; $p <= 9; $p++) {
                     yield [$p, 'slide-' . $p . '.png', 'PNG' . $p];
                 }
@@ -1647,9 +1649,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The uploaded presentation.
              * @param int $maxdim The maximum image dimension.
+             * @param string $renderfont The render font.
              * @return \Generator Yields nothing.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 throw new \coding_exception('renderer must not run when the option is off');
                 yield;
             }
@@ -1689,6 +1692,8 @@ final class importer_test extends \advanced_testcase {
                 . '<a:minorFont><a:latin typeface="Aptos"/></a:minorFont></a:theme>'
         );
         $zip->addFromString('ppt/slides/slide1.xml', '<p:sld><a:latin typeface="Calibri"/></p:sld>');
+        // A SmartArt diagram part carries its own run-level font override.
+        $zip->addFromString('ppt/diagrams/data1.xml', '<dgm:dataModel><a:latin typeface="Aptos"/></dgm:dataModel>');
         $zip->close();
         $method = new \ReflectionMethod(\local_lessonimportpptx\office\renderer::class, 'apply_render_font');
         $method->setAccessible(true);
@@ -1697,21 +1702,24 @@ final class importer_test extends \advanced_testcase {
         $read->open($path);
         $theme = $read->getFromName('ppt/theme/theme1.xml');
         $slide = $read->getFromName('ppt/slides/slide1.xml');
+        $diagram = $read->getFromName('ppt/diagrams/data1.xml');
         $read->close();
-        return [$theme, $slide];
+        return [$theme, $slide, $diagram];
     }
 
     /**
-     * A chosen render font rewrites every Latin typeface — theme scheme and
-     * run-level overrides — so LibreOffice renders the deck in that one font.
+     * A chosen render font rewrites every Latin typeface — theme scheme, run-level
+     * slide overrides and SmartArt/chart parts — so LibreOffice renders the deck
+     * in that one font.
      */
     public function test_render_font_rewrites_every_typeface(): void {
         $this->resetAfterTest();
-        [$theme, $slide] = $this->apply_render_font('Carlito');
+        [$theme, $slide, $diagram] = $this->apply_render_font('Carlito');
         $this->assertStringNotContainsString('Aptos', $theme);
         $this->assertSame(2, substr_count($theme, 'typeface="Carlito"'));
         $this->assertStringContainsString('typeface="Carlito"', $slide);
         $this->assertStringNotContainsString('Calibri', $slide);
+        $this->assertStringContainsString('typeface="Carlito"', $diagram);
     }
 
     /**
@@ -1747,9 +1755,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The (ignored) uploaded presentation.
              * @param int $maxdim The (ignored) maximum image dimension.
+             * @param string $renderfont The (ignored) render font.
              * @return \Generator Yields [slidenumber, filename, bytes] arrays.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 yield [1, 'page-1.png', 'A'];
                 yield [2, 'page-2.png', 'B'];
                 yield [3, 'page-3.png', 'C'];

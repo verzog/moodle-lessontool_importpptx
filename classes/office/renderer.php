@@ -228,9 +228,11 @@ class renderer {
         }
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $name = $zip->getNameIndex($i);
-            // Text fonts live in the theme (major/minor scheme) and can be
-            // overridden per run on slides, layouts and masters.
-            if (!preg_match('#^ppt/(theme|slides|slideLayouts|slideMasters)/[^/]+\.xml$#', (string) $name)) {
+            // Text fonts appear across the presentation's DrawingML parts — the
+            // theme scheme, slides, layouts and masters, and also SmartArt
+            // diagrams and charts — so rewrite every ppt/*.xml part; the
+            // has-a:latin check below skips the ones that carry no font.
+            if (!preg_match('#^ppt/.*\.xml$#', (string) $name)) {
                 continue;
             }
             $xml = $zip->getFromIndex($i);
