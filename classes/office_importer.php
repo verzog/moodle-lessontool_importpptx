@@ -45,6 +45,9 @@ class office_importer {
     /** @var int Maximum image dimension in px (0 keeps the rendered size). */
     private int $imagemaxdim;
 
+    /** @var string Font family forced on the deck before rendering ('' keeps its own). */
+    private string $renderfont;
+
     /** @var renderer|null The render backend (injectable for testing). */
     private ?renderer $renderer;
 
@@ -53,13 +56,14 @@ class office_importer {
      *
      * @param \stdClass $lesson The lesson activity record.
      * @param \context_module $context The lesson's module context.
-     * @param array $options Import options ('imagemaxdim' int).
+     * @param array $options Import options ('imagemaxdim' int, 'renderfont' string).
      * @param renderer|null $renderer The render backend, or null to build the default.
      */
     public function __construct(\stdClass $lesson, \context_module $context, array $options = [], ?renderer $renderer = null) {
         $this->lesson = $lesson;
         $this->context = $context;
         $this->imagemaxdim = (int) ($options['imagemaxdim'] ?? 1600);
+        $this->renderfont = (string) ($options['renderfont'] ?? '');
         $this->renderer = $renderer;
     }
 
@@ -424,7 +428,7 @@ class office_importer {
             // failure here aborts the whole import (so an adhoc retry can re-run
             // it cleanly) rather than silently committing a deck with a slide missing.
             $staged = [];
-            foreach ($renderer->render_pages($pptx, $this->imagemaxdim) as [$page, $filename, $bytes]) {
+            foreach ($renderer->render_pages($pptx, $this->imagemaxdim, $this->renderfont) as [$page, $filename, $bytes]) {
                 $file = $stagedir . '/' . $page;
                 if (file_put_contents($file, $bytes) === false) {
                     throw new \moodle_exception('errorofficerender', 'local_lessonimportpptx');

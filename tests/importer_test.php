@@ -1501,9 +1501,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The (ignored) uploaded presentation.
              * @param int $maxdim The (ignored) maximum image dimension.
+             * @param string $renderfont The (ignored) render font.
              * @return \Generator Yields [slidenumber, filename, bytes] arrays.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 yield [1, 'page-1.png', 'PNGONE'];
                 yield [2, 'page-2.png', 'PNGTWO'];
             }
@@ -1604,9 +1605,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The (ignored) uploaded presentation.
              * @param int $maxdim The (ignored) maximum image dimension.
+             * @param string $renderfont The (ignored) render font.
              * @return \Generator Yields [slidenumber, filename, bytes] arrays.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 for ($p = 1; $p <= 9; $p++) {
                     yield [$p, 'slide-' . $p . '.png', 'PNG' . $p];
                 }
@@ -1647,9 +1649,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The uploaded presentation.
              * @param int $maxdim The maximum image dimension.
+             * @param string $renderfont The render font.
              * @return \Generator Yields nothing.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 throw new \coding_exception('renderer must not run when the option is off');
                 yield;
             }
@@ -1673,6 +1676,71 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * Builds a tiny .pptx with the given theme/slide font XML and runs the private
+     * render-font rewrite, returning the resulting theme and slide XML.
+     *
+     * @param string $render The render-font value to apply.
+     * @return array{0: string, 1: string} The theme XML and slide XML after rewrite.
+     */
+    private function apply_render_font(string $render): array {
+        $path = make_request_directory() . '/deck.pptx';
+        $zip = new \ZipArchive();
+        $zip->open($path, \ZipArchive::CREATE);
+        $zip->addFromString(
+            'ppt/theme/theme1.xml',
+            '<a:theme><a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont>'
+                . '<a:minorFont><a:latin typeface="Aptos"/></a:minorFont></a:theme>'
+        );
+        $zip->addFromString('ppt/slides/slide1.xml', '<p:sld><a:latin typeface="Calibri"/></p:sld>');
+        // A SmartArt diagram part carries its own run-level font overrides — here
+        // with the usual a: prefix and an alternate DrawingML prefix.
+        $zip->addFromString(
+            'ppt/diagrams/data1.xml',
+            '<dgm:dataModel><a:latin typeface="Aptos"/><d:latin typeface="Aptos"/></dgm:dataModel>'
+        );
+        $zip->close();
+        $method = new \ReflectionMethod(\local_lessonimportpptx\office\renderer::class, 'apply_render_font');
+        $method->setAccessible(true);
+        $method->invoke(null, $path, $render);
+        $read = new \ZipArchive();
+        $read->open($path);
+        $theme = $read->getFromName('ppt/theme/theme1.xml');
+        $slide = $read->getFromName('ppt/slides/slide1.xml');
+        $diagram = $read->getFromName('ppt/diagrams/data1.xml');
+        $read->close();
+        return [$theme, $slide, $diagram];
+    }
+
+    /**
+     * A chosen render font rewrites every Latin typeface — theme scheme, run-level
+     * slide overrides and SmartArt/chart parts — so LibreOffice renders the deck
+     * in that one font.
+     */
+    public function test_render_font_rewrites_every_typeface(): void {
+        $this->resetAfterTest();
+        [$theme, $slide, $diagram] = $this->apply_render_font('Carlito');
+        $this->assertStringNotContainsString('Aptos', $theme);
+        $this->assertSame(2, substr_count($theme, 'typeface="Carlito"'));
+        $this->assertStringContainsString('typeface="Carlito"', $slide);
+        $this->assertStringNotContainsString('Calibri', $slide);
+        // Both the a: and the alternate-prefix latin runs in the diagram rewrite.
+        $this->assertSame(2, substr_count($diagram, 'typeface="Carlito"'));
+        $this->assertStringNotContainsString('Aptos', $diagram);
+    }
+
+    /**
+     * "Keep original" (and any name outside the allowed list) leaves the deck's
+     * fonts untouched.
+     */
+    public function test_render_font_keep_original_leaves_fonts(): void {
+        $this->resetAfterTest();
+        [$theme] = $this->apply_render_font('');
+        $this->assertStringContainsString('typeface="Aptos"', $theme);
+        [$theme2] = $this->apply_render_font('Bogus Font');
+        $this->assertStringContainsString('typeface="Aptos"', $theme2);
+    }
+
+    /**
      * Image pages are titled from each slide's own title, falling back to
      * "Slide N" for a slide with no title placeholder.
      */
@@ -1693,9 +1761,10 @@ final class importer_test extends \advanced_testcase {
              *
              * @param \stored_file $pptx The (ignored) uploaded presentation.
              * @param int $maxdim The (ignored) maximum image dimension.
+             * @param string $renderfont The (ignored) render font.
              * @return \Generator Yields [slidenumber, filename, bytes] arrays.
              */
-            public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+            public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
                 yield [1, 'page-1.png', 'A'];
                 yield [2, 'page-2.png', 'B'];
                 yield [3, 'page-3.png', 'C'];

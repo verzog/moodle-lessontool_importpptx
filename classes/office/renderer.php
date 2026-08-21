@@ -49,6 +49,15 @@ class renderer {
     /** @var int Seconds a cached availability result is trusted before re-probing. */
     const AVAILABLE_TTL = 3600;
 
+    /**
+     * @var string[] Font families a render may be forced to use. Restricting the
+     * choice keeps an arbitrary (and possibly unsafe) name out of the theme XML,
+     * and each is a widely packaged, metric-friendly face: Carlito matches
+     * Calibri and the newer Aptos, the Liberation set matches Arial/Times, and
+     * DejaVu Sans is a broad fallback.
+     */
+    const RENDER_FONTS = ['Carlito', 'Liberation Sans', 'Liberation Serif', 'DejaVu Sans'];
+
     /** @var bool|null Cached availability result for this request. */
     private static ?bool $available = null;
 
@@ -173,13 +182,20 @@ class renderer {
      *
      * @param \stored_file $pptx The uploaded presentation.
      * @param int $maxdim Maximum image dimension in px (0 keeps the rendered size).
+     * @param string $renderfont A font family (from {@see self::RENDER_FONTS}) to
+     *                           force on the deck before rendering, or '' to keep
+     *                           the deck's own fonts.
      * @return \Generator Yields [slidenumber, filename, bytes] arrays.
      * @throws \moodle_exception If conversion or rendering fails.
      */
-    public function render_pages(\stored_file $pptx, int $maxdim): \Generator {
+    public function render_pages(\stored_file $pptx, int $maxdim, string $renderfont = ''): \Generator {
         $dir = make_request_directory();
         $source = $dir . '/import.pptx';
         $pptx->copy_content_to($source);
+        self::assert_archive_within_limits($source);
+        self::apply_render_font($source, $renderfont);
+        // Re-check after the rewrite: a longer font name can grow the XML parts,
+        // so the size caps must hold for the archive actually handed to LibreOffice.
         self::assert_archive_within_limits($source);
 
         $pdfpath = self::convert_to_pdf($source, $dir);
@@ -187,6 +203,57 @@ class renderer {
             throw new \moodle_exception('errorofficerender', 'local_lessonimportpptx');
         }
         yield from (new pdfrenderer())->render_path($pdfpath, $maxdim);
+    }
+
+    /**
+     * Forces a single Latin font on the staged .pptx before it is rendered.
+     *
+     * A deck rendered on a server that lacks its fonts (for example a deck in
+     * Aptos, Office's 2024 default) has them substituted by LibreOffice, often
+     * with a wider face that overflows the deck's fixed-size text boxes. Rewriting
+     * every Latin typeface — the theme's major/minor fonts and any run-level
+     * override — to one installed, metric-friendly family sidesteps that. Only
+     * this temporary render copy is touched; the imported editable content and the
+     * original upload are untouched.
+     *
+     * @param string $source Absolute path to the staged .pptx (modified in place).
+     * @param string $renderfont The font family to force, or '' / an unknown name
+     *                           to leave the deck's fonts alone.
+     * @return void
+     */
+    private static function apply_render_font(string $source, string $renderfont): void {
+        if ($renderfont === '' || !in_array($renderfont, self::RENDER_FONTS, true)) {
+            return;
+        }
+        $zip = new \ZipArchive();
+        if ($zip->open($source) !== true) {
+            return;
+        }
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+            // Text fonts appear across the presentation's DrawingML parts — the
+            // theme scheme, slides, layouts and masters, and also SmartArt
+            // diagrams and charts — so rewrite every ppt/*.xml part; the
+            // has-a-latin check below skips the ones that carry no font.
+            if (!preg_match('#^ppt/.*\.xml$#', (string) $name)) {
+                continue;
+            }
+            $xml = $zip->getFromIndex($i);
+            if ($xml === false || stripos($xml, 'latin') === false) {
+                continue;
+            }
+            // The DrawingML "latin" element is almost always the a: prefix, but the
+            // prefix is only bound by declaration, so match any (or none).
+            $rewritten = preg_replace(
+                '/(<(?:[a-zA-Z_][\w.\-]*:)?latin\b[^>]*\btypeface=")[^"]*(")/',
+                '${1}' . $renderfont . '${2}',
+                $xml
+            );
+            if (is_string($rewritten) && $rewritten !== $xml) {
+                $zip->addFromString($name, $rewritten);
+            }
+        }
+        $zip->close();
     }
 
     /**
