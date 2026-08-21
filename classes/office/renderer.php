@@ -194,6 +194,9 @@ class renderer {
         $pptx->copy_content_to($source);
         self::assert_archive_within_limits($source);
         self::apply_render_font($source, $renderfont);
+        // Re-check after the rewrite: a longer font name can grow the XML parts,
+        // so the size caps must hold for the archive actually handed to LibreOffice.
+        self::assert_archive_within_limits($source);
 
         $pdfpath = self::convert_to_pdf($source, $dir);
         if ($pdfpath === null) {
@@ -231,16 +234,18 @@ class renderer {
             // Text fonts appear across the presentation's DrawingML parts — the
             // theme scheme, slides, layouts and masters, and also SmartArt
             // diagrams and charts — so rewrite every ppt/*.xml part; the
-            // has-a:latin check below skips the ones that carry no font.
+            // has-a-latin check below skips the ones that carry no font.
             if (!preg_match('#^ppt/.*\.xml$#', (string) $name)) {
                 continue;
             }
             $xml = $zip->getFromIndex($i);
-            if ($xml === false || strpos($xml, '<a:latin') === false) {
+            if ($xml === false || stripos($xml, 'latin') === false) {
                 continue;
             }
+            // The DrawingML "latin" element is almost always the a: prefix, but the
+            // prefix is only bound by declaration, so match any (or none).
             $rewritten = preg_replace(
-                '/(<a:latin\b[^>]*\btypeface=")[^"]*(")/',
+                '/(<(?:[a-zA-Z_][\w.\-]*:)?latin\b[^>]*\btypeface=")[^"]*(")/',
                 '${1}' . $renderfont . '${2}',
                 $xml
             );

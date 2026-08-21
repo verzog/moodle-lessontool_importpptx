@@ -1692,8 +1692,12 @@ final class importer_test extends \advanced_testcase {
                 . '<a:minorFont><a:latin typeface="Aptos"/></a:minorFont></a:theme>'
         );
         $zip->addFromString('ppt/slides/slide1.xml', '<p:sld><a:latin typeface="Calibri"/></p:sld>');
-        // A SmartArt diagram part carries its own run-level font override.
-        $zip->addFromString('ppt/diagrams/data1.xml', '<dgm:dataModel><a:latin typeface="Aptos"/></dgm:dataModel>');
+        // A SmartArt diagram part carries its own run-level font overrides — here
+        // with the usual a: prefix and an alternate DrawingML prefix.
+        $zip->addFromString(
+            'ppt/diagrams/data1.xml',
+            '<dgm:dataModel><a:latin typeface="Aptos"/><d:latin typeface="Aptos"/></dgm:dataModel>'
+        );
         $zip->close();
         $method = new \ReflectionMethod(\local_lessonimportpptx\office\renderer::class, 'apply_render_font');
         $method->setAccessible(true);
@@ -1719,7 +1723,9 @@ final class importer_test extends \advanced_testcase {
         $this->assertSame(2, substr_count($theme, 'typeface="Carlito"'));
         $this->assertStringContainsString('typeface="Carlito"', $slide);
         $this->assertStringNotContainsString('Calibri', $slide);
-        $this->assertStringContainsString('typeface="Carlito"', $diagram);
+        // Both the a: and the alternate-prefix latin runs in the diagram rewrite.
+        $this->assertSame(2, substr_count($diagram, 'typeface="Carlito"'));
+        $this->assertStringNotContainsString('Aptos', $diagram);
     }
 
     /**
