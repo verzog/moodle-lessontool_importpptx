@@ -402,6 +402,14 @@ class renderer {
         int $cx,
         int $cy
     ): float {
+        // Vertical text swaps the wrapping and line-advance axes; the horizontal
+        // model below does not apply, so such a body is left untouched.
+        if ($bodypr instanceof \DOMElement) {
+            $vert = $bodypr->getAttribute('vert');
+            if ($vert !== '' && $vert !== 'horz') {
+                return 1.0;
+            }
+        }
         $emuperpt = 12700.0;
         $lins = self::inset($bodypr, 'lIns', 91440);
         $rins = self::inset($bodypr, 'rIns', 91440);
@@ -412,16 +420,53 @@ class renderer {
         if ($innerwidthpt <= 0 || $innerheightpt <= 0) {
             return 1.0;
         }
+        $paras = self::collect_paragraphs($xpath, $txbody, $innerwidthpt, $emuperpt);
+        if (!$paras) {
+            return 1.0;
+        }
         $fontpath = self::fit_font_path();
-        $neededpt = 0.0;
-        foreach ($xpath->query('a:p', $txbody) as $para) {
-            $szs = [];
-            foreach ($xpath->query('.//a:rPr/@sz | a:pPr/a:defRPr/@sz | a:endParaRPr/@sz', $para) as $szattr) {
-                $szs[] = (int) $szattr->nodeValue;
+        $budget = $innerheightpt * self::FIT_TARGET_FILL;
+        if (self::fit_needed_height($paras, 1.0, $fontpath) <= $budget) {
+            return 1.0;
+        }
+        // Shrinking the font also reduces how many lines each paragraph wraps to,
+        // so the full-size line count does not hold at smaller sizes. Search for
+        // the largest scale whose re-wrapped height fits, rather than scaling the
+        // full-size height linearly (which over-shrinks marginal overflows).
+        $lo = self::FIT_MIN_SCALE;
+        $hi = 1.0;
+        for ($i = 0; $i < 8; $i++) {
+            $mid = ($lo + $hi) / 2.0;
+            if (self::fit_needed_height($paras, $mid, $fontpath) <= $budget) {
+                $lo = $mid;
+            } else {
+                $hi = $mid;
             }
-            $sizept = ($szs ? max($szs) : self::FIT_DEFAULT_SZ) / 100.0;
-            $marl = 0;
+        }
+        return $lo;
+    }
+
+    /**
+     * Extracts the fit-relevant metadata for each paragraph of a text body.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $txbody The p:txBody element holding the paragraphs.
+     * @param float $innerwidthpt The box's usable width in points.
+     * @param float $emuperpt EMU per point.
+     * @return array<int, array{size: float, avail: float, segments: string[],
+     *     lnspc: ?array{unit: string, val: float}, before: ?array{unit: string, val: float},
+     *     after: ?array{unit: string, val: float}}> One entry per paragraph.
+     */
+    private static function collect_paragraphs(
+        \DOMXPath $xpath,
+        \DOMNode $txbody,
+        float $innerwidthpt,
+        float $emuperpt
+    ): array {
+        $paras = [];
+        foreach ($xpath->query('a:p', $txbody) as $para) {
             $ppr = $xpath->query('a:pPr', $para)->item(0);
+            $marl = 0;
             if ($ppr instanceof \DOMElement && $ppr->hasAttribute('marL')) {
                 $marl = (int) $ppr->getAttribute('marL');
             }
@@ -429,22 +474,172 @@ class renderer {
             if ($availpt <= 0) {
                 $availpt = $innerwidthpt;
             }
-            $text = '';
-            foreach ($xpath->query('.//a:t', $para) as $t) {
-                $text .= $t->textContent;
+            $paras[] = [
+                'size' => self::resolve_para_size($xpath, $para, $txbody, $ppr),
+                'avail' => $availpt,
+                'segments' => self::paragraph_segments($para),
+                'lnspc' => self::spacing_spec($ppr, 'lnSpc'),
+                'before' => self::spacing_spec($ppr, 'spcBef'),
+                'after' => self::spacing_spec($ppr, 'spcAft'),
+            ];
+        }
+        return $paras;
+    }
+
+    /**
+     * Sums the rendered height of every paragraph at a given font scale.
+     *
+     * @param array<int, array<string, mixed>> $paras Metadata from collect_paragraphs().
+     * @param float $scale The font scale to evaluate (1.0 = full size).
+     * @param string $fontpath A measurable TTF path, or '' to use the estimate.
+     * @return float The total height in points.
+     */
+    private static function fit_needed_height(array $paras, float $scale, string $fontpath): float {
+        $total = 0.0;
+        foreach ($paras as $para) {
+            $sizept = $para['size'] * $scale;
+            $lineadvance = self::line_advance_pt($para['lnspc'], $sizept);
+            $lines = 0;
+            foreach ($para['segments'] as $segment) {
+                $lines += self::count_wrapped_lines($segment, $sizept, $para['avail'], $fontpath);
             }
-            $lines = self::count_wrapped_lines($text, $sizept, $availpt, $fontpath);
-            $neededpt += $lines * $sizept * self::FIT_LINE_HEIGHT;
-            $neededpt += self::space_before_pt($ppr, $sizept);
+            $total += max(1, $lines) * $lineadvance;
+            $total += self::spacing_value_pt($para['before'], $sizept);
+            $total += self::spacing_value_pt($para['after'], $sizept);
         }
-        if ($neededpt <= 0) {
-            return 1.0;
+        return $total;
+    }
+
+    /**
+     * The height of one line for a font size, honouring declared line spacing.
+     *
+     * @param array{unit: string, val: float}|null $lnspc Line-spacing spec, or null.
+     * @param float $sizept The (already scaled) font size in points.
+     * @return float The line advance in points.
+     */
+    private static function line_advance_pt(?array $lnspc, float $sizept): float {
+        if ($lnspc === null) {
+            return $sizept * self::FIT_LINE_HEIGHT;
         }
-        $budget = $innerheightpt * self::FIT_TARGET_FILL;
-        if ($neededpt <= $budget) {
-            return 1.0;
+        if ($lnspc['unit'] === 'pts') {
+            // An exact point spacing is a fixed line height regardless of size.
+            return $lnspc['val'];
         }
-        return max(self::FIT_MIN_SCALE, $budget / $neededpt);
+        // A percentage is relative to the single-line height.
+        return $sizept * self::FIT_LINE_HEIGHT * $lnspc['val'];
+    }
+
+    /**
+     * Splits a paragraph into the text segments its forced line breaks produce.
+     *
+     * A soft break (a:br, i.e. Shift+Enter) starts a new rendered line even when
+     * the text would otherwise fit on one, so each break bounds a segment.
+     *
+     * @param \DOMNode $para The a:p element.
+     * @return string[] One string per forced line (at least one, possibly empty).
+     */
+    private static function paragraph_segments(\DOMNode $para): array {
+        $segments = [];
+        $current = '';
+        foreach ($para->childNodes as $child) {
+            if (!$child instanceof \DOMElement) {
+                continue;
+            }
+            if ($child->localName === 'br') {
+                $segments[] = $current;
+                $current = '';
+                continue;
+            }
+            // Runs (a:r) and text fields (a:fld) both carry a:t text.
+            if ($child->localName === 'r' || $child->localName === 'fld') {
+                foreach ($child->getElementsByTagName('t') as $t) {
+                    $current .= $t->textContent;
+                }
+            }
+        }
+        $segments[] = $current;
+        return $segments;
+    }
+
+    /**
+     * Resolves a paragraph's font size in points through the inheritance chain.
+     *
+     * Run overrides win; then the paragraph's own default; then the end-paragraph
+     * mark; then the body's list style for the paragraph's indent level. Layout
+     * and master placeholder styles are not consulted (those bodies inherit their
+     * geometry too, so they are skipped before reaching here), and a body default
+     * is the final fallback.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $para The a:p element.
+     * @param \DOMNode $txbody The p:txBody element (for its a:lstStyle).
+     * @param \DOMElement|null $ppr The paragraph's a:pPr, or null.
+     * @return float The font size in points.
+     */
+    private static function resolve_para_size(
+        \DOMXPath $xpath,
+        \DOMNode $para,
+        \DOMNode $txbody,
+        ?\DOMElement $ppr
+    ): float {
+        $szs = [];
+        foreach ($xpath->query('.//a:rPr/@sz | a:pPr/a:defRPr/@sz | a:endParaRPr/@sz', $para) as $szattr) {
+            $szs[] = (int) $szattr->nodeValue;
+        }
+        if ($szs) {
+            return max($szs) / 100.0;
+        }
+        $level = 0;
+        if ($ppr instanceof \DOMElement && $ppr->hasAttribute('lvl')) {
+            $level = (int) $ppr->getAttribute('lvl');
+        }
+        $lvlprops = $xpath->query('a:lstStyle/a:lvl' . ($level + 1) . 'pPr/a:defRPr/@sz', $txbody)->item(0);
+        if ($lvlprops !== null) {
+            return ((int) $lvlprops->nodeValue) / 100.0;
+        }
+        return self::FIT_DEFAULT_SZ / 100.0;
+    }
+
+    /**
+     * Reads a spacing element (a:lnSpc/a:spcBef/a:spcAft) into a unit/value pair.
+     *
+     * @param \DOMElement|null $ppr The paragraph's a:pPr, or null.
+     * @param string $tag The spacing element's local name.
+     * @return array{unit: string, val: float}|null 'pts' in points, 'pct' as a
+     *     fraction (1.0 = 100%), or null when the element is absent.
+     */
+    private static function spacing_spec(?\DOMElement $ppr, string $tag): ?array {
+        if (!$ppr instanceof \DOMElement) {
+            return null;
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $spc = $ppr->getElementsByTagNameNS($a, $tag)->item(0);
+        if (!$spc instanceof \DOMElement) {
+            return null;
+        }
+        $pts = $spc->getElementsByTagNameNS($a, 'spcPts')->item(0);
+        if ($pts instanceof \DOMElement && $pts->hasAttribute('val')) {
+            return ['unit' => 'pts', 'val' => ((int) $pts->getAttribute('val')) / 100.0];
+        }
+        $pct = $spc->getElementsByTagNameNS($a, 'spcPct')->item(0);
+        if ($pct instanceof \DOMElement && $pct->hasAttribute('val')) {
+            return ['unit' => 'pct', 'val' => ((int) $pct->getAttribute('val')) / 100000.0];
+        }
+        return null;
+    }
+
+    /**
+     * Converts a space-before/after spec to points at a given font size.
+     *
+     * @param array{unit: string, val: float}|null $spec A spacing spec, or null.
+     * @param float $sizept The (already scaled) font size in points.
+     * @return float The spacing in points (0 when none).
+     */
+    private static function spacing_value_pt(?array $spec, float $sizept): float {
+        if ($spec === null) {
+            return 0.0;
+        }
+        return $spec['unit'] === 'pts' ? $spec['val'] : $spec['val'] * $sizept;
     }
 
     /**
@@ -532,37 +727,6 @@ class renderer {
             }
         }
         return '';
-    }
-
-    /**
-     * Returns a paragraph's space-before in points.
-     *
-     * A list paragraph usually reserves space above it; counting it keeps the fit
-     * estimate from running short. Both the point form (a:spcPts, in 1/100 pt) and
-     * the percentage form (a:spcPct, in 1/1000 %, relative to the line) are read.
-     *
-     * @param \DOMElement|null $ppr The paragraph's a:pPr element, or null.
-     * @param float $sizept The paragraph font size in points (for the percentage form).
-     * @return float The space-before in points (0 when none is declared).
-     */
-    private static function space_before_pt(?\DOMElement $ppr, float $sizept): float {
-        if (!$ppr instanceof \DOMElement) {
-            return 0.0;
-        }
-        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
-        $spcbef = $ppr->getElementsByTagNameNS($a, 'spcBef')->item(0);
-        if (!$spcbef instanceof \DOMElement) {
-            return 0.0;
-        }
-        $pts = $spcbef->getElementsByTagNameNS($a, 'spcPts')->item(0);
-        if ($pts instanceof \DOMElement && $pts->hasAttribute('val')) {
-            return ((int) $pts->getAttribute('val')) / 100.0;
-        }
-        $pct = $spcbef->getElementsByTagNameNS($a, 'spcPct')->item(0);
-        if ($pct instanceof \DOMElement && $pct->hasAttribute('val')) {
-            return (((int) $pct->getAttribute('val')) / 100000.0) * $sizept;
-        }
-        return 0.0;
     }
 
     /**

@@ -1837,6 +1837,25 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * Soft line breaks (a:br) each start a new rendered line, so a box of short
+     * broken lines that would fit as one concatenated string is still shrunk.
+     */
+    public function test_autofit_counts_soft_line_breaks(): void {
+        $this->resetAfterTest();
+        $runs = '';
+        foreach (['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon'] as $i => $word) {
+            $runs .= ($i ? '<a:br/>' : '') . '<a:r><a:rPr sz="2400"/><a:t>' . $word . '</a:t></a:r>';
+        }
+        // A wide but short box: no wrapping, but five 24pt lines overflow it.
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(5486400, 822960, '<a:p>' . $runs . '</a:p>', '<a:normAutofit/>')
+        );
+        $this->assertMatchesRegularExpression('/fontScale="(\d+)"/', $slide);
+        preg_match('/fontScale="(\d+)"/', $slide, $m);
+        $this->assertLessThan(100000, (int) $m[1]);
+    }
+
+    /**
      * Image pages are titled from each slide's own title, falling back to
      * "Slide N" for a slide with no title placeholder.
      */
