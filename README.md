@@ -216,14 +216,14 @@ applies to both modes:
   installed where LibreOffice runs (e.g. `apt install fonts-crosextra-carlito`).
 
 When slides are rendered to images, text boxes set to PowerPoint's *Shrink text
-on overflow* are also handled automatically. PowerPoint computes that shrink when
-a slide is shown and does not store it in the file, so LibreOffice draws the text
-full size and it can spill out of the box. The importer estimates the overflow
-for each such box and bakes in the equivalent shrink before rendering, so the
-image matches what PowerPoint shows. Boxes that already fit are left unchanged,
-and the editable text is never touched. Width is measured with an installed
-metric font when one is present (Carlito, Liberation Sans or DejaVu Sans);
-otherwise a slightly more conservative estimate is used.
+on overflow* are handled automatically. LibreOffice does not apply that shrink
+during a headless conversion, so the text renders full size and can spill out of
+the box. The importer reduces the actual text sizes before rendering — by the
+scale PowerPoint stored for the box, or by an estimate from the box geometry for
+a box that has none — so the image matches what PowerPoint shows. Boxes that
+already fit are left unchanged, and the editable text is never touched. Width is
+measured with an installed metric font when one is present (Carlito, Liberation
+Sans or DejaVu Sans); otherwise a slightly more conservative estimate is used.
 
 Access to the importer is controlled by the `local/lessonimportpptx:import`
 capability (allowed for editing teachers and managers by default). The

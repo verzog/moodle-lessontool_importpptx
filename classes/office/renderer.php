@@ -353,7 +353,16 @@ class renderer {
     }
 
     /**
-     * Adds a computed {@code fontScale} to each overflowing autofit body in a slide.
+     * Shrinks each overflowing autofit body by reducing its real font sizes.
+     *
+     * PowerPoint's "Shrink text on overflow" scale lives in {@code <a:normAutofit
+     * fontScale="…"/>}, but LibreOffice does not apply that attribute during a
+     * headless PDF conversion, so the text renders full size and spills out of the
+     * box. Rather than (re)writing the ignored attribute, this applies the scale
+     * to the actual run sizes — which LibreOffice always honours — using
+     * PowerPoint's own fontScale where it baked one, or an estimate for a bare
+     * body. The attribute is then removed so a future LibreOffice that does honour
+     * it cannot shrink a second time.
      *
      * @param string $xml The slide part's XML.
      * @param string $fontpath A TTF used to measure text, or '' to estimate widths.
@@ -370,39 +379,27 @@ class renderer {
         $xpath->registerNamespace('a', $a);
         $xpath->registerNamespace('p', 'http://schemas.openxmlformats.org/presentationml/2006/main');
         $changed = false;
-        foreach ($xpath->query('//a:normAutofit[not(@fontScale)]') as $naf) {
+        foreach ($xpath->query('//a:normAutofit') as $naf) {
             $bodypr = $naf->parentNode;
             $txbody = $bodypr instanceof \DOMElement ? $bodypr->parentNode : null;
-            $shape = $txbody instanceof \DOMElement ? $txbody->parentNode : null;
-            if (!$shape instanceof \DOMElement) {
+            if (!$txbody instanceof \DOMElement) {
                 continue;
             }
-            $ext = $xpath->query('.//a:xfrm/a:ext', $shape)->item(0);
-            if (!$ext instanceof \DOMElement) {
+            if ($naf->hasAttribute('fontScale')) {
+                // Honour the shrink PowerPoint already computed and stored.
+                $scale = ((int) $naf->getAttribute('fontScale')) / 100000.0;
+            } else {
+                // No stored scale: estimate one from the box geometry.
+                $scale = self::bare_autofit_scale($xpath, $naf, $bodypr, $txbody, $fontpath);
+            }
+            if ($scale <= 0.0 || $scale >= 1.0) {
                 continue;
             }
-            // Only rectangle-like presets lay text out across the full extent; a
-            // non-rectangular preset (ellipse, arrow, …) uses a smaller internal
-            // rectangle the estimate would misjudge, so leave those unchanged.
-            $prst = $xpath->query('.//a:prstGeom/@prst', $shape)->item(0);
-            if ($prst !== null && !in_array($prst->nodeValue, self::FIT_RECT_PRESETS, true)) {
-                continue;
-            }
-            $cx = (int) $ext->getAttribute('cx');
-            $cy = (int) $ext->getAttribute('cy');
-            if ($cx <= 0 || $cy <= 0) {
-                continue;
-            }
-            $scale = self::estimate_fit_scale($xpath, $bodypr, $txbody, $cx, $cy, $fontpath);
-            if ($scale >= 1.0) {
-                continue;
-            }
-            $naf->setAttribute('fontScale', (string) (int) round($scale * 100000));
-            // A modest line-spacing reduction, as PowerPoint pairs with a shrink.
-            $lnspc = (int) round((1.0 - $scale) * 50000);
-            if ($lnspc > 0) {
-                $naf->setAttribute('lnSpcReduction', (string) min(20000, $lnspc));
-            }
+            self::scale_body_sizes($xpath, $txbody, $scale);
+            // The scale is now baked into the sizes, so drop the (ignored) hints to
+            // avoid any double shrink if LibreOffice later learns to apply them.
+            $naf->removeAttribute('fontScale');
+            $naf->removeAttribute('lnSpcReduction');
             $changed = true;
         }
         if (!$changed) {
@@ -410,6 +407,122 @@ class renderer {
         }
         $out = $doc->saveXML();
         return $out === false ? null : $out;
+    }
+
+    /**
+     * Estimates the shrink scale for a bare autofit body (no stored fontScale).
+     *
+     * Requires an explicit rectangle-like box to size against; returns 1.0 (no
+     * shrink) when the shape's geometry is missing, non-rectangular or vertical.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $naf The a:normAutofit element.
+     * @param \DOMNode $bodypr The a:bodyPr element.
+     * @param \DOMNode $txbody The p:txBody element.
+     * @param string $fontpath A TTF used to measure text, or '' to estimate widths.
+     * @return float A scale in (0, 1]; 1.0 means no shrink.
+     */
+    private static function bare_autofit_scale(
+        \DOMXPath $xpath,
+        \DOMNode $naf,
+        \DOMNode $bodypr,
+        \DOMNode $txbody,
+        string $fontpath
+    ): float {
+        $shape = $txbody->parentNode;
+        if (!$shape instanceof \DOMElement) {
+            return 1.0;
+        }
+        $ext = $xpath->query('.//a:xfrm/a:ext', $shape)->item(0);
+        if (!$ext instanceof \DOMElement) {
+            return 1.0;
+        }
+        // Only rectangle-like presets lay text out across the full extent; a
+        // non-rectangular preset (ellipse, arrow, …) uses a smaller internal
+        // rectangle the estimate would misjudge, so leave those unchanged.
+        $prst = $xpath->query('.//a:prstGeom/@prst', $shape)->item(0);
+        if ($prst !== null && !in_array($prst->nodeValue, self::FIT_RECT_PRESETS, true)) {
+            return 1.0;
+        }
+        $cx = (int) $ext->getAttribute('cx');
+        $cy = (int) $ext->getAttribute('cy');
+        if ($cx <= 0 || $cy <= 0) {
+            return 1.0;
+        }
+        return self::estimate_fit_scale($xpath, $bodypr, $txbody, $cx, $cy, $fontpath);
+    }
+
+    /**
+     * Multiplies every font size in a text body by a scale, in place.
+     *
+     * Explicit sizes (runs, paragraph defaults, end-of-paragraph marks and the
+     * body list style) are scaled directly; a run that inherits its size gets an
+     * explicit, scaled size injected so the reduction is not lost. Sizes are in
+     * hundredths of a point and never dropped below 1pt.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $txbody The p:txBody element to rescale.
+     * @param float $scale The scale to apply (0 < scale < 1).
+     * @return void
+     */
+    private static function scale_body_sizes(\DOMXPath $xpath, \DOMNode $txbody, float $scale): void {
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        foreach ($xpath->query('a:p', $txbody) as $para) {
+            $ppr = $xpath->query('a:pPr', $para)->item(0);
+            $inherited = self::inherited_para_size_x100($xpath, $para, $txbody, $ppr);
+            foreach ($xpath->query('a:r', $para) as $run) {
+                $rpr = $xpath->query('a:rPr', $run)->item(0);
+                if (!$rpr instanceof \DOMElement) {
+                    $rpr = $run->ownerDocument->createElementNS($a, 'a:rPr');
+                    $run->insertBefore($rpr, $run->firstChild);
+                }
+                $orig = $rpr->hasAttribute('sz') ? (int) $rpr->getAttribute('sz') : $inherited;
+                $rpr->setAttribute('sz', (string) max(100, (int) round($orig * $scale)));
+            }
+        }
+        // Paragraph defaults, end-of-paragraph marks and list-style sizes are not
+        // run sizes handled above, so scale whatever explicit sizes they declare.
+        foreach ($xpath->query('.//a:defRPr/@sz | .//a:endParaRPr/@sz', $txbody) as $szattr) {
+            $szattr->nodeValue = (string) max(100, (int) round(((int) $szattr->nodeValue) * $scale));
+        }
+    }
+
+    /**
+     * The size a paragraph's runs inherit when they declare none, in 1/100 pt.
+     *
+     * Follows paragraph default -> end-of-paragraph mark -> body list style for the
+     * paragraph's indent level, then the body default. Run sizes are deliberately
+     * not consulted (each run is handled on its own).
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $para The a:p element.
+     * @param \DOMNode $txbody The p:txBody element (for its a:lstStyle).
+     * @param \DOMElement|null $ppr The paragraph's a:pPr, or null.
+     * @return int The inherited size in hundredths of a point.
+     */
+    private static function inherited_para_size_x100(
+        \DOMXPath $xpath,
+        \DOMNode $para,
+        \DOMNode $txbody,
+        ?\DOMElement $ppr
+    ): int {
+        $defrpr = $xpath->query('a:pPr/a:defRPr/@sz', $para)->item(0);
+        if ($defrpr !== null) {
+            return (int) $defrpr->nodeValue;
+        }
+        $endpara = $xpath->query('a:endParaRPr/@sz', $para)->item(0);
+        if ($endpara !== null) {
+            return (int) $endpara->nodeValue;
+        }
+        $level = 0;
+        if ($ppr instanceof \DOMElement && $ppr->hasAttribute('lvl')) {
+            $level = (int) $ppr->getAttribute('lvl');
+        }
+        $lvl = $xpath->query('a:lstStyle/a:lvl' . ($level + 1) . 'pPr/a:defRPr/@sz', $txbody)->item(0);
+        if ($lvl !== null) {
+            return (int) $lvl->nodeValue;
+        }
+        return self::FIT_DEFAULT_SZ;
     }
 
     /**
