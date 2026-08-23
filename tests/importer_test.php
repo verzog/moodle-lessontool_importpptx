@@ -1741,6 +1741,162 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * Builds a .pptx whose single slide is the given XML, runs the private
+     * shrink-to-fit pass, and returns the slide XML afterwards.
+     *
+     * @param string $slidexml The slide part's XML.
+     * @return string The slide XML after the autofit rewrite.
+     */
+    private function apply_autofit_shrink(string $slidexml): string {
+        $path = make_request_directory() . '/deck.pptx';
+        $zip = new \ZipArchive();
+        $zip->open($path, \ZipArchive::CREATE);
+        $zip->addFromString('ppt/slides/slide1.xml', $slidexml);
+        $zip->close();
+        $method = new \ReflectionMethod(\local_lessonimportpptx\office\renderer::class, 'apply_autofit_shrink');
+        $method->setAccessible(true);
+        $method->invoke(null, $path);
+        $read = new \ZipArchive();
+        $read->open($path);
+        $slide = $read->getFromName('ppt/slides/slide1.xml');
+        $read->close();
+        return $slide;
+    }
+
+    /**
+     * Wraps a text body of the given box size and paragraphs in a slide shape.
+     *
+     * @param int $cx Box width in EMU.
+     * @param int $cy Box height in EMU.
+     * @param string $paras The paragraph XML for the body.
+     * @param string $autofit The a:normAutofit element to use.
+     * @param bool $withgeom Whether to give the shape an explicit a:xfrm.
+     * @param string $prst A preset geometry name, or '' for none.
+     * @param string $wrap An a:bodyPr wrap value (e.g. 'none'), or '' for the default.
+     * @return string The slide XML.
+     */
+    private function autofit_slide(
+        int $cx,
+        int $cy,
+        string $paras,
+        string $autofit,
+        bool $withgeom = true,
+        string $prst = '',
+        string $wrap = ''
+    ): string {
+        $xfrm = $withgeom
+            ? '<a:xfrm><a:off x="0" y="0"/><a:ext cx="' . $cx . '" cy="' . $cy . '"/></a:xfrm>'
+            : '';
+        $geom = $prst !== '' ? '<a:prstGeom prst="' . $prst . '"/>' : '';
+        $wrapattr = $wrap !== '' ? ' wrap="' . $wrap . '"' : '';
+        return '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+            . ' xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            . '<p:cSld><p:spTree><p:sp><p:spPr>' . $xfrm . $geom . '</p:spPr>'
+            . '<p:txBody><a:bodyPr' . $wrapattr . '>' . $autofit . '</a:bodyPr>' . $paras . '</p:txBody>'
+            . '</p:sp></p:spTree></p:cSld></p:sld>';
+    }
+
+    /**
+     * A body that PowerPoint would shrink to fit gets an explicit, sane fontScale
+     * baked in so LibreOffice reproduces the shrink.
+     */
+    public function test_autofit_shrinks_overflowing_body(): void {
+        $this->resetAfterTest();
+        // Six 32pt lines cannot fit a 1.5in x 0.8in box under any measurement.
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink($this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit/>'));
+        $this->assertMatchesRegularExpression('/<a:normAutofit\b[^>]*\bfontScale="(\d+)"/', $slide);
+        preg_match('/fontScale="(\d+)"/', $slide, $m);
+        $scale = (int) $m[1];
+        $this->assertGreaterThanOrEqual(30000, $scale);
+        $this->assertLessThan(100000, $scale);
+    }
+
+    /**
+     * A body that already fits its box is left untouched.
+     */
+    public function test_autofit_leaves_fitting_body_alone(): void {
+        $this->resetAfterTest();
+        $paras = '<a:p><a:r><a:rPr sz="1800"/><a:t>Hi</a:t></a:r></a:p>';
+        $slide = $this->apply_autofit_shrink($this->autofit_slide(9144000, 5486400, $paras, '<a:normAutofit/>'));
+        $this->assertStringNotContainsString('fontScale', $slide);
+    }
+
+    /**
+     * A fontScale PowerPoint already persisted is honoured, not overwritten.
+     */
+    public function test_autofit_preserves_existing_scale(): void {
+        $this->resetAfterTest();
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit fontScale="90000"/>')
+        );
+        $this->assertSame(1, substr_count($slide, 'fontScale'));
+        $this->assertStringContainsString('fontScale="90000"', $slide);
+    }
+
+    /**
+     * A body whose geometry is inherited (no slide-level a:xfrm) is skipped, since
+     * its box size cannot be measured from the slide alone.
+     */
+    public function test_autofit_skips_body_without_geometry(): void {
+        $this->resetAfterTest();
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit/>', false)
+        );
+        $this->assertStringNotContainsString('fontScale', $slide);
+    }
+
+    /**
+     * A wrap="none" body cannot wrap, so a line wider than the box drives a shrink
+     * even when the box is tall enough for the (single) line's height.
+     */
+    public function test_autofit_shrinks_no_wrap_body_by_width(): void {
+        $this->resetAfterTest();
+        $long = '<a:p><a:r><a:rPr sz="2400"/>'
+            . '<a:t>This is an extremely long single line label that exceeds the box width</a:t>'
+            . '</a:r></a:p>';
+        // Tall box, but the un-wrappable line is far wider than 3 inches.
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(2743200, 3657600, $long, '<a:normAutofit/>', true, 'rect', 'none')
+        );
+        $this->assertMatchesRegularExpression('/fontScale="(\d+)"/', $slide);
+    }
+
+    /**
+     * A non-rectangular preset (e.g. an ellipse) lays text out in a smaller
+     * internal rectangle, so it is left alone rather than misjudged.
+     */
+    public function test_autofit_skips_nonrectangular_preset(): void {
+        $this->resetAfterTest();
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit/>', true, 'ellipse')
+        );
+        $this->assertStringNotContainsString('fontScale', $slide);
+    }
+
+    /**
+     * Soft line breaks (a:br) each start a new rendered line, so a box of short
+     * broken lines that would fit as one concatenated string is still shrunk.
+     */
+    public function test_autofit_counts_soft_line_breaks(): void {
+        $this->resetAfterTest();
+        $runs = '';
+        foreach (['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon'] as $i => $word) {
+            $runs .= ($i ? '<a:br/>' : '') . '<a:r><a:rPr sz="2400"/><a:t>' . $word . '</a:t></a:r>';
+        }
+        // A wide but short box: no wrapping, but five 24pt lines overflow it.
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(5486400, 822960, '<a:p>' . $runs . '</a:p>', '<a:normAutofit/>')
+        );
+        $this->assertMatchesRegularExpression('/fontScale="(\d+)"/', $slide);
+        preg_match('/fontScale="(\d+)"/', $slide, $m);
+        $this->assertLessThan(100000, (int) $m[1]);
+    }
+
+    /**
      * Image pages are titled from each slide's own title, falling back to
      * "Slide N" for a slide with no title placeholder.
      */

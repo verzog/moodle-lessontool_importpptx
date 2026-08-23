@@ -58,6 +58,56 @@ class renderer {
      */
     const RENDER_FONTS = ['Carlito', 'Liberation Sans', 'Liberation Serif', 'DejaVu Sans'];
 
+    /** @var float Line advance as a multiple of the font point size, for fit estimates. */
+    const FIT_LINE_HEIGHT = 1.2;
+
+    /** @var float Average glyph advance as a fraction of the font point size. */
+    const FIT_CHAR_WIDTH = 0.52;
+
+    /** @var float Fraction of the box a shrunk body is allowed to fill (leaves a margin). */
+    const FIT_TARGET_FILL = 0.93;
+
+    /** @var float Smallest font scale the shrink-to-fit pass will apply. */
+    const FIT_MIN_SCALE = 0.30;
+
+    /** @var int Default body point size (x100) when a paragraph declares none. */
+    const FIT_DEFAULT_SZ = 1800;
+
+    /** @var int Assumed rasterisation DPI when measuring glyph widths with GD. */
+    const FIT_DPI = 96;
+
+    /**
+     * @var string[] Font files probed, in order, to measure text width. The list
+     * mirrors {@see self::RENDER_FONTS}: metric-compatible faces LibreOffice also
+     * substitutes in, so a measurement here matches what it will render.
+     */
+    const FIT_FONT_CANDIDATES = [
+        '/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ];
+
+    /** @var array Render-font name (string) to the TTF path (string) used to measure it. */
+    const FIT_FONT_FILES = [
+        'Carlito' => '/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf',
+        'Liberation Sans' => '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        'Liberation Serif' => '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
+        'DejaVu Sans' => '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ];
+
+    /**
+     * @var string[] Preset geometries whose text rectangle is the full extent, so
+     * the fit estimate is valid. Non-rectangular presets (ellipse, arrows, …) lay
+     * text out in a smaller internal rectangle and are left alone.
+     */
+    const FIT_RECT_PRESETS = [
+        'rect', 'roundRect', 'round1Rect', 'round2SameRect', 'round2DiagRect',
+        'snip1Rect', 'snip2SameRect', 'snip2DiagRect', 'snipRoundRect', 'plaque',
+    ];
+
+    /** @var float Fallback width, in em, for a full-width (e.g. CJK) glyph. */
+    const FIT_FULLWIDTH_EM = 1.0;
+
     /** @var bool|null Cached availability result for this request. */
     private static ?bool $available = null;
 
@@ -194,8 +244,10 @@ class renderer {
         $pptx->copy_content_to($source);
         self::assert_archive_within_limits($source);
         self::apply_render_font($source, $renderfont);
-        // Re-check after the rewrite: a longer font name can grow the XML parts,
-        // so the size caps must hold for the archive actually handed to LibreOffice.
+        self::apply_autofit_shrink($source, $renderfont);
+        // Re-check after the rewrites: a longer font name or added attributes can
+        // grow the XML parts, so the size caps must hold for the archive actually
+        // handed to LibreOffice.
         self::assert_archive_within_limits($source);
 
         $pdfpath = self::convert_to_pdf($source, $dir);
@@ -254,6 +306,556 @@ class renderer {
             }
         }
         $zip->close();
+    }
+
+    /**
+     * Bakes a shrink-to-fit scale into text bodies that ask for one.
+     *
+     * PowerPoint's "Shrink text on overflow" (a bare {@code <a:normAutofit/>})
+     * computes its scale live when the slide is shown and does not persist it in
+     * the file. LibreOffice does not recompute that scale during a headless PDF
+     * conversion, so it draws the text full size and it spills out of the box in
+     * the rendered image. Estimating the overflow here and writing an explicit
+     * {@code fontScale} — which LibreOffice does honour — reproduces the shrink.
+     *
+     * Only bodies that already opt into shrink-to-fit are touched, and only ever
+     * to make text smaller, so a body that already fits is left unchanged. Only
+     * the temporary render copy is modified.
+     *
+     * @param string $source Absolute path to the staged .pptx (modified in place).
+     * @param string $renderfont The render font forced on the deck, or '' — used to
+     *                           measure text in the family LibreOffice will render.
+     * @return void
+     */
+    private static function apply_autofit_shrink(string $source, string $renderfont = ''): void {
+        $zip = new \ZipArchive();
+        if ($zip->open($source) !== true) {
+            return;
+        }
+        $fontpath = self::fit_font_path($renderfont);
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = (string) $zip->getNameIndex($i);
+            // Only rendered slide bodies carry the explicit geometry needed to
+            // size the fit; layout/master placeholders inherit theirs.
+            if (!preg_match('#^ppt/slides/slide\d+\.xml$#', $name)) {
+                continue;
+            }
+            $xml = $zip->getFromIndex($i);
+            if ($xml === false || strpos($xml, 'normAutofit') === false) {
+                continue;
+            }
+            $rewritten = self::shrink_slide_autofit($xml, $fontpath);
+            if ($rewritten !== null && $rewritten !== $xml) {
+                $zip->addFromString($name, $rewritten);
+            }
+        }
+        $zip->close();
+    }
+
+    /**
+     * Adds a computed {@code fontScale} to each overflowing autofit body in a slide.
+     *
+     * @param string $xml The slide part's XML.
+     * @param string $fontpath A TTF used to measure text, or '' to estimate widths.
+     * @return string|null The rewritten XML, or null if it could not be parsed.
+     */
+    private static function shrink_slide_autofit(string $xml, string $fontpath = ''): ?string {
+        $doc = new \DOMDocument();
+        $ok = @$doc->loadXML($xml);
+        if ($ok === false) {
+            return null;
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $xpath = new \DOMXPath($doc);
+        $xpath->registerNamespace('a', $a);
+        $xpath->registerNamespace('p', 'http://schemas.openxmlformats.org/presentationml/2006/main');
+        $changed = false;
+        foreach ($xpath->query('//a:normAutofit[not(@fontScale)]') as $naf) {
+            $bodypr = $naf->parentNode;
+            $txbody = $bodypr instanceof \DOMElement ? $bodypr->parentNode : null;
+            $shape = $txbody instanceof \DOMElement ? $txbody->parentNode : null;
+            if (!$shape instanceof \DOMElement) {
+                continue;
+            }
+            $ext = $xpath->query('.//a:xfrm/a:ext', $shape)->item(0);
+            if (!$ext instanceof \DOMElement) {
+                continue;
+            }
+            // Only rectangle-like presets lay text out across the full extent; a
+            // non-rectangular preset (ellipse, arrow, …) uses a smaller internal
+            // rectangle the estimate would misjudge, so leave those unchanged.
+            $prst = $xpath->query('.//a:prstGeom/@prst', $shape)->item(0);
+            if ($prst !== null && !in_array($prst->nodeValue, self::FIT_RECT_PRESETS, true)) {
+                continue;
+            }
+            $cx = (int) $ext->getAttribute('cx');
+            $cy = (int) $ext->getAttribute('cy');
+            if ($cx <= 0 || $cy <= 0) {
+                continue;
+            }
+            $scale = self::estimate_fit_scale($xpath, $bodypr, $txbody, $cx, $cy, $fontpath);
+            if ($scale >= 1.0) {
+                continue;
+            }
+            $naf->setAttribute('fontScale', (string) (int) round($scale * 100000));
+            // A modest line-spacing reduction, as PowerPoint pairs with a shrink.
+            $lnspc = (int) round((1.0 - $scale) * 50000);
+            if ($lnspc > 0) {
+                $naf->setAttribute('lnSpcReduction', (string) min(20000, $lnspc));
+            }
+            $changed = true;
+        }
+        if (!$changed) {
+            return $xml;
+        }
+        $out = $doc->saveXML();
+        return $out === false ? null : $out;
+    }
+
+    /**
+     * Estimates the font scale that would let a text body fit its box height.
+     *
+     * The estimate wraps each paragraph by average glyph advance and sums the line
+     * advances; when that exceeds the box's usable height the ratio (with a small
+     * safety margin) becomes the scale, clamped to a sane floor. It intentionally
+     * errs towards shrinking a little more rather than leaving text overflowing.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $bodypr The a:bodyPr element (source of text insets).
+     * @param \DOMNode $txbody The p:txBody element holding the paragraphs.
+     * @param int $cx Box width in EMU.
+     * @param int $cy Box height in EMU.
+     * @param string $fontpath A TTF used to measure text, or '' to estimate widths.
+     * @return float A scale in (0, 1]; 1.0 means the body already fits.
+     */
+    private static function estimate_fit_scale(
+        \DOMXPath $xpath,
+        \DOMNode $bodypr,
+        \DOMNode $txbody,
+        int $cx,
+        int $cy,
+        string $fontpath = ''
+    ): float {
+        // Vertical text swaps the wrapping and line-advance axes; the horizontal
+        // model below does not apply, so such a body is left untouched.
+        $nowrap = false;
+        if ($bodypr instanceof \DOMElement) {
+            $vert = $bodypr->getAttribute('vert');
+            if ($vert !== '' && $vert !== 'horz') {
+                return 1.0;
+            }
+            $nowrap = $bodypr->getAttribute('wrap') === 'none';
+        }
+        $emuperpt = 12700.0;
+        $lins = self::inset($bodypr, 'lIns', 91440);
+        $rins = self::inset($bodypr, 'rIns', 91440);
+        $tins = self::inset($bodypr, 'tIns', 45720);
+        $bins = self::inset($bodypr, 'bIns', 45720);
+        $innerwidthpt = ($cx - $lins - $rins) / $emuperpt;
+        $innerheightpt = ($cy - $tins - $bins) / $emuperpt;
+        if ($innerwidthpt <= 0 || $innerheightpt <= 0) {
+            return 1.0;
+        }
+        $paras = self::collect_paragraphs($xpath, $txbody, $innerwidthpt, $emuperpt);
+        if (!$paras) {
+            return 1.0;
+        }
+        $budget = $innerheightpt * self::FIT_TARGET_FILL;
+        if (self::body_fits($paras, 1.0, $fontpath, $budget, $nowrap)) {
+            return 1.0;
+        }
+        // Shrinking the font also reduces how many lines each paragraph wraps to,
+        // so the full-size line count does not hold at smaller sizes. Search for
+        // the largest scale whose re-wrapped height (and width, for no-wrap
+        // bodies) fits, rather than scaling the full-size height linearly (which
+        // over-shrinks marginal overflows).
+        $lo = self::FIT_MIN_SCALE;
+        $hi = 1.0;
+        for ($i = 0; $i < 8; $i++) {
+            $mid = ($lo + $hi) / 2.0;
+            if (self::body_fits($paras, $mid, $fontpath, $budget, $nowrap)) {
+                $lo = $mid;
+            } else {
+                $hi = $mid;
+            }
+        }
+        return $lo;
+    }
+
+    /**
+     * Extracts the fit-relevant metadata for each paragraph of a text body.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $txbody The p:txBody element holding the paragraphs.
+     * @param float $innerwidthpt The box's usable width in points.
+     * @param float $emuperpt EMU per point.
+     * @return array One entry per paragraph, each with keys: size (float pt),
+     *     avail (float pt), segments (string[]), and lnspc/before/after (each an
+     *     array with keys unit and val, or null).
+     */
+    private static function collect_paragraphs(
+        \DOMXPath $xpath,
+        \DOMNode $txbody,
+        float $innerwidthpt,
+        float $emuperpt
+    ): array {
+        $paras = [];
+        foreach ($xpath->query('a:p', $txbody) as $para) {
+            $ppr = $xpath->query('a:pPr', $para)->item(0);
+            $marl = 0;
+            if ($ppr instanceof \DOMElement && $ppr->hasAttribute('marL')) {
+                $marl = (int) $ppr->getAttribute('marL');
+            }
+            $availpt = $innerwidthpt - ($marl / $emuperpt);
+            if ($availpt <= 0) {
+                $availpt = $innerwidthpt;
+            }
+            $paras[] = [
+                'size' => self::resolve_para_size($xpath, $para, $txbody, $ppr),
+                'avail' => $availpt,
+                'segments' => self::paragraph_segments($para),
+                'lnspc' => self::spacing_spec($ppr, 'lnSpc'),
+                'before' => self::spacing_spec($ppr, 'spcBef'),
+                'after' => self::spacing_spec($ppr, 'spcAft'),
+            ];
+        }
+        return $paras;
+    }
+
+    /**
+     * Decides whether a body fits its box height (and width, when it cannot wrap)
+     * at a given font scale.
+     *
+     * @param array $paras Metadata from collect_paragraphs().
+     * @param float $scale The font scale to evaluate (1.0 = full size).
+     * @param string $fontpath A measurable TTF path, or '' to use the estimate.
+     * @param float $budget The usable box height in points.
+     * @param bool $nowrap Whether the body's a:bodyPr sets wrap="none".
+     * @return bool True when the body fits at this scale.
+     */
+    private static function body_fits(array $paras, float $scale, string $fontpath, float $budget, bool $nowrap): bool {
+        if (self::fit_needed_height($paras, $scale, $fontpath, $nowrap) > $budget) {
+            return false;
+        }
+        if (!$nowrap) {
+            return true;
+        }
+        // A wrap="none" body keeps every line intact, so the widest line must fit.
+        foreach ($paras as $para) {
+            $sizept = $para['size'] * $scale;
+            foreach ($para['segments'] as $segment) {
+                if (self::measured_width_pt($segment, $sizept, $fontpath) > $para['avail']) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Sums the rendered height of every paragraph at a given font scale.
+     *
+     * @param array $paras Metadata from collect_paragraphs().
+     * @param float $scale The font scale to evaluate (1.0 = full size).
+     * @param string $fontpath A measurable TTF path, or '' to use the estimate.
+     * @param bool $nowrap Whether the body keeps each segment on one line.
+     * @return float The total height in points.
+     */
+    private static function fit_needed_height(array $paras, float $scale, string $fontpath, bool $nowrap = false): float {
+        $total = 0.0;
+        foreach ($paras as $para) {
+            $sizept = $para['size'] * $scale;
+            $lineadvance = self::line_advance_pt($para['lnspc'], $sizept);
+            $lines = 0;
+            foreach ($para['segments'] as $segment) {
+                $lines += $nowrap ? 1 : self::count_wrapped_lines($segment, $sizept, $para['avail'], $fontpath);
+            }
+            $total += max(1, $lines) * $lineadvance;
+            $total += self::spacing_value_pt($para['before'], $sizept);
+            $total += self::spacing_value_pt($para['after'], $sizept);
+        }
+        return $total;
+    }
+
+    /**
+     * The height of one line for a font size, honouring declared line spacing.
+     *
+     * @param array|null $lnspc Line-spacing spec (keys unit, val), or null.
+     * @param float $sizept The (already scaled) font size in points.
+     * @return float The line advance in points.
+     */
+    private static function line_advance_pt(?array $lnspc, float $sizept): float {
+        if ($lnspc === null) {
+            return $sizept * self::FIT_LINE_HEIGHT;
+        }
+        if ($lnspc['unit'] === 'pts') {
+            // An exact point spacing is a fixed line height regardless of size.
+            return $lnspc['val'];
+        }
+        // A percentage is relative to the single-line height.
+        return $sizept * self::FIT_LINE_HEIGHT * $lnspc['val'];
+    }
+
+    /**
+     * Splits a paragraph into the text segments its forced line breaks produce.
+     *
+     * A soft break (a:br, i.e. Shift+Enter) starts a new rendered line even when
+     * the text would otherwise fit on one, so each break bounds a segment.
+     *
+     * @param \DOMNode $para The a:p element.
+     * @return string[] One string per forced line (at least one, possibly empty).
+     */
+    private static function paragraph_segments(\DOMNode $para): array {
+        $segments = [];
+        $current = '';
+        foreach ($para->childNodes as $child) {
+            if (!$child instanceof \DOMElement) {
+                continue;
+            }
+            if ($child->localName === 'br') {
+                $segments[] = $current;
+                $current = '';
+                continue;
+            }
+            // Runs (a:r) and text fields (a:fld) both carry a:t text.
+            if ($child->localName === 'r' || $child->localName === 'fld') {
+                foreach ($child->getElementsByTagName('t') as $t) {
+                    $current .= $t->textContent;
+                }
+            }
+        }
+        $segments[] = $current;
+        return $segments;
+    }
+
+    /**
+     * Resolves a paragraph's font size in points through the inheritance chain.
+     *
+     * Run overrides win; then the paragraph's own default; then the end-paragraph
+     * mark; then the body's list style for the paragraph's indent level. Layout
+     * and master placeholder styles are not consulted (those bodies inherit their
+     * geometry too, so they are skipped before reaching here), and a body default
+     * is the final fallback.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $para The a:p element.
+     * @param \DOMNode $txbody The p:txBody element (for its a:lstStyle).
+     * @param \DOMElement|null $ppr The paragraph's a:pPr, or null.
+     * @return float The font size in points.
+     */
+    private static function resolve_para_size(
+        \DOMXPath $xpath,
+        \DOMNode $para,
+        \DOMNode $txbody,
+        ?\DOMElement $ppr
+    ): float {
+        $szs = [];
+        foreach ($xpath->query('.//a:rPr/@sz | a:pPr/a:defRPr/@sz | a:endParaRPr/@sz', $para) as $szattr) {
+            $szs[] = (int) $szattr->nodeValue;
+        }
+        if ($szs) {
+            return max($szs) / 100.0;
+        }
+        $level = 0;
+        if ($ppr instanceof \DOMElement && $ppr->hasAttribute('lvl')) {
+            $level = (int) $ppr->getAttribute('lvl');
+        }
+        $lvlprops = $xpath->query('a:lstStyle/a:lvl' . ($level + 1) . 'pPr/a:defRPr/@sz', $txbody)->item(0);
+        if ($lvlprops !== null) {
+            return ((int) $lvlprops->nodeValue) / 100.0;
+        }
+        return self::FIT_DEFAULT_SZ / 100.0;
+    }
+
+    /**
+     * Reads a spacing element (a:lnSpc/a:spcBef/a:spcAft) into a unit/value pair.
+     *
+     * @param \DOMElement|null $ppr The paragraph's a:pPr, or null.
+     * @param string $tag The spacing element's local name.
+     * @return array|null Keys unit ('pts'/'pct') and val — points for 'pts', a
+     *     fraction (1.0 = 100%) for 'pct' — or null when the element is absent.
+     */
+    private static function spacing_spec(?\DOMElement $ppr, string $tag): ?array {
+        if (!$ppr instanceof \DOMElement) {
+            return null;
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $spc = $ppr->getElementsByTagNameNS($a, $tag)->item(0);
+        if (!$spc instanceof \DOMElement) {
+            return null;
+        }
+        $pts = $spc->getElementsByTagNameNS($a, 'spcPts')->item(0);
+        if ($pts instanceof \DOMElement && $pts->hasAttribute('val')) {
+            return ['unit' => 'pts', 'val' => ((int) $pts->getAttribute('val')) / 100.0];
+        }
+        $pct = $spc->getElementsByTagNameNS($a, 'spcPct')->item(0);
+        if ($pct instanceof \DOMElement && $pct->hasAttribute('val')) {
+            return ['unit' => 'pct', 'val' => ((int) $pct->getAttribute('val')) / 100000.0];
+        }
+        return null;
+    }
+
+    /**
+     * Converts a space-before/after spec to points at a given font size.
+     *
+     * @param array|null $spec A spacing spec (keys unit, val), or null.
+     * @param float $sizept The (already scaled) font size in points.
+     * @return float The spacing in points (0 when none).
+     */
+    private static function spacing_value_pt(?array $spec, float $sizept): float {
+        if ($spec === null) {
+            return 0.0;
+        }
+        return $spec['unit'] === 'pts' ? $spec['val'] : $spec['val'] * $sizept;
+    }
+
+    /**
+     * Counts the display lines a paragraph wraps to within an available width.
+     *
+     * Words are wrapped greedily, matching how LibreOffice lays the line out, using
+     * measured widths (GD when a metric font is available, else an em estimate).
+     * A single token wider than the line is broken across lines. An empty segment
+     * still occupies one line.
+     *
+     * @param string $text The segment's plain text.
+     * @param float $sizept The font size in points.
+     * @param float $availpt The usable line width in points.
+     * @param string $fontpath A measurable TTF path, or '' to use the estimate.
+     * @return int The line count (at least 1).
+     */
+    private static function count_wrapped_lines(string $text, float $sizept, float $availpt, string $fontpath): int {
+        $words = preg_split('/\s+/', trim($text), -1, PREG_SPLIT_NO_EMPTY);
+        if (!$words || $availpt <= 0 || $sizept <= 0) {
+            return 1;
+        }
+        $lines = 0;
+        $current = '';
+        foreach ($words as $word) {
+            // A single token wider than the line (LibreOffice breaks it mid-word,
+            // e.g. at a slash) spans several lines on its own.
+            $wordwidth = self::measured_width_pt($word, $sizept, $fontpath);
+            if ($wordwidth > $availpt) {
+                if ($current !== '') {
+                    $lines++;
+                    $current = '';
+                }
+                $lines += max(1, (int) ceil($wordwidth / $availpt));
+                continue;
+            }
+            $candidate = $current === '' ? $word : $current . ' ' . $word;
+            if ($current !== '' && self::measured_width_pt($candidate, $sizept, $fontpath) > $availpt) {
+                $lines++;
+                $current = $word;
+            } else {
+                $current = $candidate;
+            }
+        }
+        if ($current !== '') {
+            $lines++;
+        }
+        return max(1, $lines);
+    }
+
+    /**
+     * Measures a string's rendered width in points at a font size.
+     *
+     * Uses GD when a metric font is given; otherwise estimates from per-character
+     * em widths (full-width glyphs such as CJK count as a full em, Latin as about
+     * half), so a font-less host does not badly undercount wide scripts.
+     *
+     * @param string $text The text to measure.
+     * @param float $sizept The font size in points.
+     * @param string $fontpath An existing TTF path, or '' to estimate.
+     * @return float The width in points.
+     */
+    private static function measured_width_pt(string $text, float $sizept, string $fontpath): float {
+        if ($fontpath !== '') {
+            $box = @imagettfbbox($sizept, 0, $fontpath, $text);
+            if (is_array($box)) {
+                // GD rasterises the point size at FIT_DPI; convert the pixel width
+                // back to points so it compares against the box (also in points).
+                return abs($box[2] - $box[0]) * 72.0 / self::FIT_DPI;
+            }
+        }
+        return self::estimate_width_em($text) * $sizept;
+    }
+
+    /**
+     * Estimates a string's width in em units for the font-less fallback.
+     *
+     * @param string $text The text to measure.
+     * @return float The width in em.
+     */
+    private static function estimate_width_em(string $text): float {
+        $chars = function_exists('mb_str_split') ? mb_str_split($text) : str_split($text);
+        $width = 0.0;
+        foreach ($chars as $char) {
+            $width += self::is_fullwidth($char) ? self::FIT_FULLWIDTH_EM : self::FIT_CHAR_WIDTH;
+        }
+        return $width;
+    }
+
+    /**
+     * Whether a character occupies a full em cell (CJK and other wide scripts).
+     *
+     * @param string $char A single (possibly multibyte) character.
+     * @return bool True for full-width glyphs.
+     */
+    private static function is_fullwidth(string $char): bool {
+        if (!function_exists('mb_ord')) {
+            return false;
+        }
+        $cp = @mb_ord($char, 'UTF-8');
+        if ($cp === false) {
+            return false;
+        }
+        return ($cp >= 0x1100 && $cp <= 0x115F)      // Hangul Jamo.
+            || ($cp >= 0x2E80 && $cp <= 0xA4CF)      // CJK radicals … Yi.
+            || ($cp >= 0xAC00 && $cp <= 0xD7A3)      // Hangul syllables.
+            || ($cp >= 0xF900 && $cp <= 0xFAFF)      // CJK compatibility ideographs.
+            || ($cp >= 0xFF00 && $cp <= 0xFF60)      // Fullwidth forms.
+            || ($cp >= 0xFFE0 && $cp <= 0xFFE6)      // Fullwidth signs.
+            || ($cp >= 0x20000 && $cp <= 0x3FFFD);   // CJK extension planes.
+    }
+
+    /**
+     * Returns a TTF to measure with: the selected render font's file when it is
+     * readable, otherwise the first available metric candidate, or '' if none.
+     *
+     * @param string $renderfont The forced render-font name, or ''.
+     * @return string An existing TTF path, or '' when width must be estimated.
+     */
+    private static function fit_font_path(string $renderfont = ''): string {
+        if (!function_exists('imagettfbbox')) {
+            return '';
+        }
+        if (
+            $renderfont !== '' && isset(self::FIT_FONT_FILES[$renderfont])
+            && is_readable(self::FIT_FONT_FILES[$renderfont])
+        ) {
+            return self::FIT_FONT_FILES[$renderfont];
+        }
+        foreach (self::FIT_FONT_CANDIDATES as $path) {
+            if (is_readable($path)) {
+                return $path;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Reads a text-inset attribute from a:bodyPr, in EMU.
+     *
+     * @param \DOMNode $bodypr The a:bodyPr element.
+     * @param string $attr The inset attribute name (lIns/rIns/tIns/bIns).
+     * @param int $default The OOXML default when the attribute is absent.
+     * @return int The inset in EMU.
+     */
+    private static function inset(\DOMNode $bodypr, string $attr, int $default): int {
+        if ($bodypr instanceof \DOMElement && $bodypr->hasAttribute($attr)) {
+            return (int) $bodypr->getAttribute($attr);
+        }
+        return $default;
     }
 
     /**

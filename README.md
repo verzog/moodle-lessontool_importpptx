@@ -215,6 +215,16 @@ applies to both modes:
   the rendered slide images, never the editable text, and the chosen font must be
   installed where LibreOffice runs (e.g. `apt install fonts-crosextra-carlito`).
 
+When slides are rendered to images, text boxes set to PowerPoint's *Shrink text
+on overflow* are also handled automatically. PowerPoint computes that shrink when
+a slide is shown and does not store it in the file, so LibreOffice draws the text
+full size and it can spill out of the box. The importer estimates the overflow
+for each such box and bakes in the equivalent shrink before rendering, so the
+image matches what PowerPoint shows. Boxes that already fit are left unchanged,
+and the editable text is never touched. Width is measured with an installed
+metric font when one is present (Carlito, Liberation Sans or DejaVu Sans);
+otherwise a slightly more conservative estimate is used.
+
 Access to the importer is controlled by the `local/lessonimportpptx:import`
 capability (allowed for editing teachers and managers by default). The
 background-task threshold defaults to 30 slides.
