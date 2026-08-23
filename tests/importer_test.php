@@ -1875,6 +1875,97 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * A run that inherits its size from the body's own list style is scaled by the
+     * resolved size, not the 18pt fallback.
+     */
+    public function test_autofit_scales_inherited_lststyle_size(): void {
+        $this->resetAfterTest();
+        // Body list style sets level-0 to 32pt; the size-less run inherits it, so a
+        // baked 80% scale should give 32 * 0.8 = 25.6pt.
+        $body = '<a:lstStyle><a:lvl1pPr><a:defRPr sz="3200"/></a:lvl1pPr></a:lstStyle>'
+            . '<a:p><a:r><a:t>Inherited</a:t></a:r></a:p>';
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(9144000, 5486400, $body, '<a:normAutofit fontScale="80000"/>')
+        );
+        $this->assertStringContainsString('sz="2560"', $slide);
+    }
+
+    /**
+     * A size that cannot be resolved anywhere is left untouched rather than being
+     * replaced with a wrong guess (which would render the text far too small).
+     */
+    public function test_autofit_leaves_unknown_inherited_size_alone(): void {
+        $this->resetAfterTest();
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(9144000, 5486400, '<a:p><a:r><a:t>NoSize</a:t></a:r></a:p>', '<a:normAutofit fontScale="80000"/>')
+        );
+        $this->assertStringNotContainsString('sz=', $slide);
+    }
+
+    /**
+     * Builds a .pptx with a slide, layout and master, runs the shrink pass, and
+     * returns the slide XML — exercising cross-part size inheritance.
+     *
+     * @param string $slidexml The slide XML.
+     * @param string $layoutxml The layout XML.
+     * @param string $masterxml The master XML.
+     * @return string The slide XML after the autofit rewrite.
+     */
+    private function apply_autofit_shrink_layout(string $slidexml, string $layoutxml, string $masterxml): string {
+        $rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+        $pkg = 'http://schemas.openxmlformats.org/package/2006/relationships';
+        $slidrels = '<Relationships xmlns="' . $pkg . '"><Relationship Id="rId1" Type="' . $rel
+            . '/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>';
+        $layrels = '<Relationships xmlns="' . $pkg . '"><Relationship Id="rId1" Type="' . $rel
+            . '/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>';
+        $path = make_request_directory() . '/deck.pptx';
+        $zip = new \ZipArchive();
+        $zip->open($path, \ZipArchive::CREATE);
+        $zip->addFromString('ppt/slides/slide1.xml', $slidexml);
+        $zip->addFromString('ppt/slides/_rels/slide1.xml.rels', $slidrels);
+        $zip->addFromString('ppt/slideLayouts/slideLayout1.xml', $layoutxml);
+        $zip->addFromString('ppt/slideLayouts/_rels/slideLayout1.xml.rels', $layrels);
+        $zip->addFromString('ppt/slideMasters/slideMaster1.xml', $masterxml);
+        $zip->close();
+        $method = new \ReflectionMethod(\local_lessonimportpptx\office\renderer::class, 'apply_autofit_shrink');
+        $method->setAccessible(true);
+        $method->invoke(null, $path);
+        $read = new \ZipArchive();
+        $read->open($path);
+        $slide = $read->getFromName('ppt/slides/slide1.xml');
+        $read->close();
+        return $slide;
+    }
+
+    /**
+     * A placeholder run whose size comes from the slide layout is scaled by that
+     * resolved size, not the fallback.
+     */
+    public function test_autofit_resolves_layout_inherited_size(): void {
+        $this->resetAfterTest();
+        $ns = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+            . ' xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"';
+        // The slide placeholder (idx 1) carries no size and a baked 80% scale.
+        $slidexml = '<p:sld ' . $ns . '><p:cSld><p:spTree><p:sp>'
+            . '<p:nvSpPr><p:cNvPr id="2" name="CP"/><p:cNvSpPr/><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr>'
+            . '<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="5486400"/></a:xfrm></p:spPr>'
+            . '<p:txBody><a:bodyPr><a:normAutofit fontScale="80000"/></a:bodyPr>'
+            . '<a:p><a:r><a:t>Inherited</a:t></a:r></a:p></p:txBody>'
+            . '</p:sp></p:spTree></p:cSld></p:sld>';
+        // The layout's matching placeholder (idx 1) sets level-0 to 32pt.
+        $layoutxml = '<p:sldLayout ' . $ns . '><p:cSld><p:spTree><p:sp>'
+            . '<p:nvSpPr><p:cNvPr id="2" name="CP"/><p:cNvSpPr/><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr>'
+            . '<p:spPr/><p:txBody><a:bodyPr/>'
+            . '<a:lstStyle><a:lvl1pPr><a:defRPr sz="3200"/></a:lvl1pPr></a:lstStyle><a:p/></p:txBody>'
+            . '</p:sp></p:spTree></p:cSld></p:sldLayout>';
+        $masterxml = '<p:sldMaster ' . $ns . '><p:txStyles>'
+            . '<p:bodyStyle><a:lvl1pPr><a:defRPr sz="2800"/></a:lvl1pPr></p:bodyStyle></p:txStyles></p:sldMaster>';
+        $slide = $this->apply_autofit_shrink_layout($slidexml, $layoutxml, $masterxml);
+        // 32pt from the layout, scaled by 80%, is 25.6pt.
+        $this->assertStringContainsString('sz="2560"', $slide);
+    }
+
+    /**
      * A wrap="none" body cannot wrap, so a line wider than the box drives a shrink
      * even when the box is tall enough for the (single) line's height.
      */
