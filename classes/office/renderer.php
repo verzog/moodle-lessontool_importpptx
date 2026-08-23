@@ -521,7 +521,7 @@ class renderer {
                 $rpr = $xpath->query('a:rPr', $run)->item(0);
                 if ($rpr instanceof \DOMElement && $rpr->hasAttribute('sz')) {
                     $orig = (int) $rpr->getAttribute('sz');
-                } elseif ($inherited > 0) {
+                } else if ($inherited > 0) {
                     $orig = $inherited;
                     if (!$rpr instanceof \DOMElement) {
                         $rpr = $run->ownerDocument->createElementNS($a, 'a:rPr');
