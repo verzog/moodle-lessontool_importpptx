@@ -344,7 +344,10 @@ class renderer {
             if ($xml === false || strpos($xml, 'normAutofit') === false) {
                 continue;
             }
-            $rewritten = self::shrink_slide_autofit($xml, $fontpath);
+            // A placeholder's real font size can live in its layout or master, so
+            // resolve that inheritance context before rescaling this slide's text.
+            $styles = self::build_style_context($zip, $name);
+            $rewritten = self::shrink_slide_autofit($xml, $fontpath, $styles);
             if ($rewritten !== null && $rewritten !== $xml) {
                 $zip->addFromString($name, $rewritten);
             }
@@ -353,13 +356,23 @@ class renderer {
     }
 
     /**
-     * Adds a computed {@code fontScale} to each overflowing autofit body in a slide.
+     * Shrinks each overflowing autofit body by reducing its real font sizes.
+     *
+     * PowerPoint's "Shrink text on overflow" scale lives in {@code <a:normAutofit
+     * fontScale="…"/>}, but LibreOffice does not apply that attribute during a
+     * headless PDF conversion, so the text renders full size and spills out of the
+     * box. Rather than (re)writing the ignored attribute, this applies the scale
+     * to the actual run sizes — which LibreOffice always honours — using
+     * PowerPoint's own fontScale where it baked one, or an estimate for a bare
+     * body. The attribute is then removed so a future LibreOffice that does honour
+     * it cannot shrink a second time.
      *
      * @param string $xml The slide part's XML.
      * @param string $fontpath A TTF used to measure text, or '' to estimate widths.
+     * @param array $styles Layout/master size inheritance context for the slide.
      * @return string|null The rewritten XML, or null if it could not be parsed.
      */
-    private static function shrink_slide_autofit(string $xml, string $fontpath = ''): ?string {
+    private static function shrink_slide_autofit(string $xml, string $fontpath = '', array $styles = []): ?string {
         $doc = new \DOMDocument();
         $ok = @$doc->loadXML($xml);
         if ($ok === false) {
@@ -370,39 +383,38 @@ class renderer {
         $xpath->registerNamespace('a', $a);
         $xpath->registerNamespace('p', 'http://schemas.openxmlformats.org/presentationml/2006/main');
         $changed = false;
-        foreach ($xpath->query('//a:normAutofit[not(@fontScale)]') as $naf) {
+        foreach ($xpath->query('//a:normAutofit') as $naf) {
             $bodypr = $naf->parentNode;
             $txbody = $bodypr instanceof \DOMElement ? $bodypr->parentNode : null;
-            $shape = $txbody instanceof \DOMElement ? $txbody->parentNode : null;
-            if (!$shape instanceof \DOMElement) {
+            if (!$txbody instanceof \DOMElement) {
                 continue;
             }
-            $ext = $xpath->query('.//a:xfrm/a:ext', $shape)->item(0);
-            if (!$ext instanceof \DOMElement) {
+            if ($naf->hasAttribute('fontScale')) {
+                // Honour the shrink PowerPoint already computed and stored.
+                $scale = ((int) $naf->getAttribute('fontScale')) / 100000.0;
+            } else {
+                // No stored scale: estimate one from the box geometry.
+                $scale = self::bare_autofit_scale($xpath, $naf, $bodypr, $txbody, $fontpath);
+            }
+            if ($scale <= 0.0 || $scale >= 1.0) {
                 continue;
             }
-            // Only rectangle-like presets lay text out across the full extent; a
-            // non-rectangular preset (ellipse, arrow, …) uses a smaller internal
-            // rectangle the estimate would misjudge, so leave those unchanged.
-            $prst = $xpath->query('.//a:prstGeom/@prst', $shape)->item(0);
-            if ($prst !== null && !in_array($prst->nodeValue, self::FIT_RECT_PRESETS, true)) {
-                continue;
+            // A placeholder's inherited size lives in its layout/master, keyed by
+            // the shape's placeholder type and index.
+            [$phtype, $phidx] = self::placeholder_key($xpath, $txbody);
+            self::scale_body_sizes($xpath, $txbody, $scale, $phtype, $phidx, $styles);
+            // LibreOffice ignores lnSpcReduction too, so fold it into real line
+            // spacing before the hint is dropped.
+            if ($naf->hasAttribute('lnSpcReduction')) {
+                $reduction = ((int) $naf->getAttribute('lnSpcReduction')) / 100000.0;
+                if ($reduction > 0.0) {
+                    self::bake_line_spacing($xpath, $txbody, $reduction);
+                }
             }
-            $cx = (int) $ext->getAttribute('cx');
-            $cy = (int) $ext->getAttribute('cy');
-            if ($cx <= 0 || $cy <= 0) {
-                continue;
-            }
-            $scale = self::estimate_fit_scale($xpath, $bodypr, $txbody, $cx, $cy, $fontpath);
-            if ($scale >= 1.0) {
-                continue;
-            }
-            $naf->setAttribute('fontScale', (string) (int) round($scale * 100000));
-            // A modest line-spacing reduction, as PowerPoint pairs with a shrink.
-            $lnspc = (int) round((1.0 - $scale) * 50000);
-            if ($lnspc > 0) {
-                $naf->setAttribute('lnSpcReduction', (string) min(20000, $lnspc));
-            }
+            // The scale is now baked into the sizes, so drop the (ignored) hints to
+            // avoid any double shrink if LibreOffice later learns to apply them.
+            $naf->removeAttribute('fontScale');
+            $naf->removeAttribute('lnSpcReduction');
             $changed = true;
         }
         if (!$changed) {
@@ -410,6 +422,378 @@ class renderer {
         }
         $out = $doc->saveXML();
         return $out === false ? null : $out;
+    }
+
+    /**
+     * Returns a text body's placeholder [type, idx] as strings ('' when absent).
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $txbody The p:txBody element.
+     * @return array The placeholder [type, idx], each a string ('' when absent).
+     */
+    private static function placeholder_key(\DOMXPath $xpath, \DOMNode $txbody): array {
+        $shape = $txbody->parentNode;
+        if (!$shape instanceof \DOMElement) {
+            return ['', ''];
+        }
+        $ph = $xpath->query('.//p:nvSpPr/p:nvPr/p:ph', $shape)->item(0);
+        if (!$ph instanceof \DOMElement) {
+            return ['', ''];
+        }
+        return [$ph->getAttribute('type'), $ph->getAttribute('idx')];
+    }
+
+    /**
+     * Estimates the shrink scale for a bare autofit body (no stored fontScale).
+     *
+     * Requires an explicit rectangle-like box to size against; returns 1.0 (no
+     * shrink) when the shape's geometry is missing, non-rectangular or vertical.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $naf The a:normAutofit element.
+     * @param \DOMNode $bodypr The a:bodyPr element.
+     * @param \DOMNode $txbody The p:txBody element.
+     * @param string $fontpath A TTF used to measure text, or '' to estimate widths.
+     * @return float A scale in (0, 1]; 1.0 means no shrink.
+     */
+    private static function bare_autofit_scale(
+        \DOMXPath $xpath,
+        \DOMNode $naf,
+        \DOMNode $bodypr,
+        \DOMNode $txbody,
+        string $fontpath
+    ): float {
+        $shape = $txbody->parentNode;
+        if (!$shape instanceof \DOMElement) {
+            return 1.0;
+        }
+        $ext = $xpath->query('.//a:xfrm/a:ext', $shape)->item(0);
+        if (!$ext instanceof \DOMElement) {
+            return 1.0;
+        }
+        // Only rectangle-like presets lay text out across the full extent; a
+        // non-rectangular preset (ellipse, arrow, …) uses a smaller internal
+        // rectangle the estimate would misjudge, so leave those unchanged.
+        $prst = $xpath->query('.//a:prstGeom/@prst', $shape)->item(0);
+        if ($prst !== null && !in_array($prst->nodeValue, self::FIT_RECT_PRESETS, true)) {
+            return 1.0;
+        }
+        $cx = (int) $ext->getAttribute('cx');
+        $cy = (int) $ext->getAttribute('cy');
+        if ($cx <= 0 || $cy <= 0) {
+            return 1.0;
+        }
+        return self::estimate_fit_scale($xpath, $bodypr, $txbody, $cx, $cy, $fontpath);
+    }
+
+    /**
+     * Multiplies every font size in a text body by a scale, in place.
+     *
+     * Explicit sizes (runs, fields, paragraph defaults, end-of-paragraph marks and
+     * the body list style) are scaled directly; a run that inherits its size gets
+     * an explicit, scaled size injected — but only when that inherited size can be
+     * resolved (slide, layout, master or presentation), so a truly unknown size is
+     * left as-is rather than replaced with a wrong guess. Sizes are in hundredths
+     * of a point and never dropped below 1pt.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $txbody The p:txBody element to rescale.
+     * @param float $scale The scale to apply (0 < scale < 1).
+     * @param string $phtype The shape's placeholder type ('' if none).
+     * @param string $phidx The shape's placeholder index ('' if none).
+     * @param array $styles Layout/master size inheritance context for the slide.
+     * @return void
+     */
+    private static function scale_body_sizes(
+        \DOMXPath $xpath,
+        \DOMNode $txbody,
+        float $scale,
+        string $phtype = '',
+        string $phidx = '',
+        array $styles = []
+    ): void {
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        foreach ($xpath->query('a:p', $txbody) as $para) {
+            $ppr = $xpath->query('a:pPr', $para)->item(0);
+            $inherited = self::inherited_size_x100($xpath, $para, $txbody, $ppr, $phtype, $phidx, $styles);
+            // Runs and fields (a:fld, e.g. a date or slide number) both carry sizes.
+            foreach ($xpath->query('a:r | a:fld', $para) as $run) {
+                $rpr = $xpath->query('a:rPr', $run)->item(0);
+                if ($rpr instanceof \DOMElement && $rpr->hasAttribute('sz')) {
+                    $orig = (int) $rpr->getAttribute('sz');
+                } else if ($inherited > 0) {
+                    $orig = $inherited;
+                    if (!$rpr instanceof \DOMElement) {
+                        $rpr = $run->ownerDocument->createElementNS($a, 'a:rPr');
+                        $run->insertBefore($rpr, $run->firstChild);
+                    }
+                } else {
+                    // Inherited size unknown: leave it rather than guess wrong.
+                    continue;
+                }
+                $rpr->setAttribute('sz', (string) max(100, (int) round($orig * $scale)));
+            }
+        }
+        // Paragraph defaults, end-of-paragraph marks and list-style sizes are not
+        // run sizes handled above, so scale whatever explicit sizes they declare.
+        foreach ($xpath->query('.//a:defRPr/@sz | .//a:endParaRPr/@sz', $txbody) as $szattr) {
+            $szattr->nodeValue = (string) max(100, (int) round(((int) $szattr->nodeValue) * $scale));
+        }
+    }
+
+    /**
+     * The size a paragraph's runs inherit when they declare none, in 1/100 pt.
+     *
+     * Walks the DrawingML inheritance chain: the paragraph's own default and
+     * end-of-paragraph mark, the body list style, then — for a placeholder — the
+     * slide layout (by index, then type), the master text styles and finally the
+     * presentation default. Returns 0 when no size can be determined, so the caller
+     * can leave such a run untouched.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $para The a:p element.
+     * @param \DOMNode $txbody The p:txBody element (for its a:lstStyle).
+     * @param \DOMElement|null $ppr The paragraph's a:pPr, or null.
+     * @param string $phtype The shape's placeholder type ('' if none).
+     * @param string $phidx The shape's placeholder index ('' if none).
+     * @param array $styles Layout/master size inheritance context.
+     * @return int The inherited size in hundredths of a point, or 0 if unknown.
+     */
+    private static function inherited_size_x100(
+        \DOMXPath $xpath,
+        \DOMNode $para,
+        \DOMNode $txbody,
+        ?\DOMElement $ppr,
+        string $phtype,
+        string $phidx,
+        array $styles
+    ): int {
+        $defrpr = $xpath->query('a:pPr/a:defRPr/@sz', $para)->item(0);
+        if ($defrpr !== null) {
+            return (int) $defrpr->nodeValue;
+        }
+        $endpara = $xpath->query('a:endParaRPr/@sz', $para)->item(0);
+        if ($endpara !== null) {
+            return (int) $endpara->nodeValue;
+        }
+        $level = 0;
+        if ($ppr instanceof \DOMElement && $ppr->hasAttribute('lvl')) {
+            $level = (int) $ppr->getAttribute('lvl');
+        }
+        $lvl = $xpath->query('a:lstStyle/a:lvl' . ($level + 1) . 'pPr/a:defRPr/@sz', $txbody)->item(0);
+        if ($lvl !== null) {
+            return (int) $lvl->nodeValue;
+        }
+        // Placeholder inheritance: layout (by idx then type), master, presentation.
+        if ($phidx !== '' && isset($styles['layout_idx'][$phidx][$level])) {
+            return $styles['layout_idx'][$phidx][$level];
+        }
+        if (isset($styles['layout_type'][$phtype][$level])) {
+            return $styles['layout_type'][$phtype][$level];
+        }
+        $group = self::master_style_group($phtype);
+        if (isset($styles['master'][$group][$level])) {
+            return $styles['master'][$group][$level];
+        }
+        if (isset($styles['presentation'][$level])) {
+            return $styles['presentation'][$level];
+        }
+        return 0;
+    }
+
+    /**
+     * Maps a placeholder type to the master text-style group that sizes it.
+     *
+     * @param string $phtype The placeholder type ('' when none, i.e. a body).
+     * @return string One of 'title', 'body' or 'other'.
+     */
+    private static function master_style_group(string $phtype): string {
+        if ($phtype === 'title' || $phtype === 'ctrTitle') {
+            return 'title';
+        }
+        if ($phtype === '' || in_array($phtype, ['body', 'subTitle', 'obj'], true)) {
+            return 'body';
+        }
+        return 'other';
+    }
+
+    /**
+     * Bakes a line-spacing reduction into a body's paragraphs, in place.
+     *
+     * LibreOffice ignores normAutofit's lnSpcReduction, so the compression it asks
+     * for is applied to each paragraph's a:lnSpc — scaling an existing spacing or
+     * injecting a percentage one when none is declared.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $txbody The p:txBody element.
+     * @param float $reduction The fraction to compress line spacing by (0 < r < 1).
+     * @return void
+     */
+    private static function bake_line_spacing(\DOMXPath $xpath, \DOMNode $txbody, float $reduction): void {
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $factor = 1.0 - $reduction;
+        if ($factor <= 0.0) {
+            return;
+        }
+        foreach ($xpath->query('a:p', $txbody) as $para) {
+            $ppr = $xpath->query('a:pPr', $para)->item(0);
+            if (!$ppr instanceof \DOMElement) {
+                $ppr = $para->ownerDocument->createElementNS($a, 'a:pPr');
+                $para->insertBefore($ppr, $para->firstChild);
+            }
+            $lnspc = $xpath->query('a:lnSpc', $ppr)->item(0);
+            if ($lnspc instanceof \DOMElement) {
+                foreach ($xpath->query('a:spcPct/@val | a:spcPts/@val', $lnspc) as $val) {
+                    $val->nodeValue = (string) max(1, (int) round(((int) $val->nodeValue) * $factor));
+                }
+                continue;
+            }
+            // No explicit spacing: single spacing compressed by the reduction.
+            $lnspc = $para->ownerDocument->createElementNS($a, 'a:lnSpc');
+            $pct = $para->ownerDocument->createElementNS($a, 'a:spcPct');
+            $pct->setAttribute('val', (string) max(1, (int) round(100000 * $factor)));
+            $lnspc->appendChild($pct);
+            $ppr->insertBefore($lnspc, $ppr->firstChild);
+        }
+    }
+
+    /**
+     * Builds the layout/master/presentation size-inheritance context for a slide.
+     *
+     * @param \ZipArchive $zip The open presentation archive.
+     * @param string $slidename The slide part name (ppt/slides/slideN.xml).
+     * @return array Keyed by 'layout_idx', 'layout_type', 'master', 'presentation'.
+     */
+    private static function build_style_context(\ZipArchive $zip, string $slidename): array {
+        $styles = ['layout_idx' => [], 'layout_type' => [], 'master' => [], 'presentation' => []];
+        $layoutname = self::related_part($zip, $slidename, 'slideLayout');
+        if ($layoutname !== '') {
+            [$styles['layout_idx'], $styles['layout_type']] = self::parse_layout_sizes($zip->getFromName($layoutname));
+            $mastername = self::related_part($zip, $layoutname, 'slideMaster');
+            if ($mastername !== '') {
+                $styles['master'] = self::parse_master_sizes($zip->getFromName($mastername));
+            }
+        }
+        $styles['presentation'] = self::parse_default_text_style($zip->getFromName('ppt/presentation.xml'));
+        return $styles;
+    }
+
+    /**
+     * Resolves a part's related layout/master target from its .rels, normalised.
+     *
+     * @param \ZipArchive $zip The open presentation archive.
+     * @param string $part The part whose relationships to read.
+     * @param string $kind The relationship target stem ('slideLayout'/'slideMaster').
+     * @return string The related part name, or '' when not found.
+     */
+    private static function related_part(\ZipArchive $zip, string $part, string $kind): string {
+        $rels = $zip->getFromName(dirname($part) . '/_rels/' . basename($part) . '.rels');
+        if ($rels === false || !preg_match('#(?:\.\./)?' . $kind . 's/' . $kind . '\d+\.xml#', $rels, $m)) {
+            return '';
+        }
+        return 'ppt/' . $kind . 's/' . basename($m[0]);
+    }
+
+    /**
+     * Parses a slide layout's placeholder sizes into by-index and by-type maps.
+     *
+     * @param string|false $xml The layout XML, or false.
+     * @return array A [by-index, by-type] pair; each maps a key to level => sz.
+     */
+    private static function parse_layout_sizes($xml): array {
+        $byidx = [];
+        $bytype = [];
+        $doc = new \DOMDocument();
+        if ($xml === false || @$doc->loadXML($xml) === false) {
+            return [$byidx, $bytype];
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $p = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+        $xpath = new \DOMXPath($doc);
+        $xpath->registerNamespace('a', $a);
+        $xpath->registerNamespace('p', $p);
+        foreach ($xpath->query('//p:sp') as $sp) {
+            $ph = $xpath->query('.//p:nvSpPr/p:nvPr/p:ph', $sp)->item(0);
+            if (!$ph instanceof \DOMElement) {
+                continue;
+            }
+            $sizes = self::level_sizes($xpath, $xpath->query('.//a:lstStyle', $sp)->item(0));
+            if (!$sizes) {
+                continue;
+            }
+            if ($ph->hasAttribute('idx')) {
+                $byidx[$ph->getAttribute('idx')] = $sizes;
+            }
+            $bytype[$ph->getAttribute('type')] = $sizes;
+        }
+        return [$byidx, $bytype];
+    }
+
+    /**
+     * Parses a slide master's title/body/other text styles into level size maps.
+     *
+     * @param string|false $xml The master XML, or false.
+     * @return array Keyed 'title'/'body'/'other', each level => sz.
+     */
+    private static function parse_master_sizes($xml): array {
+        $out = [];
+        $doc = new \DOMDocument();
+        if ($xml === false || @$doc->loadXML($xml) === false) {
+            return $out;
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $p = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+        $xpath = new \DOMXPath($doc);
+        $xpath->registerNamespace('a', $a);
+        $xpath->registerNamespace('p', $p);
+        foreach (['title' => 'titleStyle', 'body' => 'bodyStyle', 'other' => 'otherStyle'] as $key => $tag) {
+            $style = $xpath->query('//p:txStyles/p:' . $tag, $doc)->item(0);
+            $sizes = self::level_sizes($xpath, $style);
+            if ($sizes) {
+                $out[$key] = $sizes;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Parses presentation.xml's defaultTextStyle into a level size map.
+     *
+     * @param string|false $xml The presentation XML, or false.
+     * @return array level => sz.
+     */
+    private static function parse_default_text_style($xml): array {
+        $doc = new \DOMDocument();
+        if ($xml === false || @$doc->loadXML($xml) === false) {
+            return [];
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $p = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+        $xpath = new \DOMXPath($doc);
+        $xpath->registerNamespace('a', $a);
+        $xpath->registerNamespace('p', $p);
+        return self::level_sizes($xpath, $xpath->query('//p:defaultTextStyle', $doc)->item(0));
+    }
+
+    /**
+     * Reads a:lvlNpPr/a:defRPr@sz for each level under a style container.
+     *
+     * @param \DOMXPath $xpath A path bound to the drawing namespaces.
+     * @param \DOMNode|null $container The a:lstStyle or p:*Style element, or null.
+     * @return array level (0-based) => sz in hundredths of a point.
+     */
+    private static function level_sizes(\DOMXPath $xpath, ?\DOMNode $container): array {
+        $sizes = [];
+        if (!$container instanceof \DOMElement) {
+            return $sizes;
+        }
+        for ($level = 0; $level < 9; $level++) {
+            $sz = $xpath->query('a:lvl' . ($level + 1) . 'pPr/a:defRPr/@sz', $container)->item(0);
+            if ($sz !== null) {
+                $sizes[$level] = (int) $sz->nodeValue;
+            }
+        }
+        return $sizes;
     }
 
     /**
