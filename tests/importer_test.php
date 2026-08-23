@@ -1771,16 +1771,28 @@ final class importer_test extends \advanced_testcase {
      * @param string $paras The paragraph XML for the body.
      * @param string $autofit The a:normAutofit element to use.
      * @param bool $withgeom Whether to give the shape an explicit a:xfrm.
+     * @param string $prst A preset geometry name, or '' for none.
+     * @param string $wrap An a:bodyPr wrap value (e.g. 'none'), or '' for the default.
      * @return string The slide XML.
      */
-    private function autofit_slide(int $cx, int $cy, string $paras, string $autofit, bool $withgeom = true): string {
+    private function autofit_slide(
+        int $cx,
+        int $cy,
+        string $paras,
+        string $autofit,
+        bool $withgeom = true,
+        string $prst = '',
+        string $wrap = ''
+    ): string {
         $xfrm = $withgeom
             ? '<a:xfrm><a:off x="0" y="0"/><a:ext cx="' . $cx . '" cy="' . $cy . '"/></a:xfrm>'
             : '';
+        $geom = $prst !== '' ? '<a:prstGeom prst="' . $prst . '"/>' : '';
+        $wrapattr = $wrap !== '' ? ' wrap="' . $wrap . '"' : '';
         return '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
             . ' xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
-            . '<p:cSld><p:spTree><p:sp><p:spPr>' . $xfrm . '</p:spPr>'
-            . '<p:txBody><a:bodyPr>' . $autofit . '</a:bodyPr>' . $paras . '</p:txBody>'
+            . '<p:cSld><p:spTree><p:sp><p:spPr>' . $xfrm . $geom . '</p:spPr>'
+            . '<p:txBody><a:bodyPr' . $wrapattr . '>' . $autofit . '</a:bodyPr>' . $paras . '</p:txBody>'
             . '</p:sp></p:spTree></p:cSld></p:sld>';
     }
 
@@ -1832,6 +1844,35 @@ final class importer_test extends \advanced_testcase {
         $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
         $slide = $this->apply_autofit_shrink(
             $this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit/>', false)
+        );
+        $this->assertStringNotContainsString('fontScale', $slide);
+    }
+
+    /**
+     * A wrap="none" body cannot wrap, so a line wider than the box drives a shrink
+     * even when the box is tall enough for the (single) line's height.
+     */
+    public function test_autofit_shrinks_no_wrap_body_by_width(): void {
+        $this->resetAfterTest();
+        $long = '<a:p><a:r><a:rPr sz="2400"/>'
+            . '<a:t>This is an extremely long single line label that exceeds the box width</a:t>'
+            . '</a:r></a:p>';
+        // Tall box, but the un-wrappable line is far wider than 3 inches.
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(2743200, 3657600, $long, '<a:normAutofit/>', true, 'rect', 'none')
+        );
+        $this->assertMatchesRegularExpression('/fontScale="(\d+)"/', $slide);
+    }
+
+    /**
+     * A non-rectangular preset (e.g. an ellipse) lays text out in a smaller
+     * internal rectangle, so it is left alone rather than misjudged.
+     */
+    public function test_autofit_skips_nonrectangular_preset(): void {
+        $this->resetAfterTest();
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit/>', true, 'ellipse')
         );
         $this->assertStringNotContainsString('fontScale', $slide);
     }
