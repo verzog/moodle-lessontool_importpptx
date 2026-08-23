@@ -58,6 +58,35 @@ class renderer {
      */
     const RENDER_FONTS = ['Carlito', 'Liberation Sans', 'Liberation Serif', 'DejaVu Sans'];
 
+    /** @var float Line advance as a multiple of the font point size, for fit estimates. */
+    const FIT_LINE_HEIGHT = 1.2;
+
+    /** @var float Average glyph advance as a fraction of the font point size. */
+    const FIT_CHAR_WIDTH = 0.52;
+
+    /** @var float Fraction of the box a shrunk body is allowed to fill (leaves a margin). */
+    const FIT_TARGET_FILL = 0.93;
+
+    /** @var float Smallest font scale the shrink-to-fit pass will apply. */
+    const FIT_MIN_SCALE = 0.30;
+
+    /** @var int Default body point size (x100) when a paragraph declares none. */
+    const FIT_DEFAULT_SZ = 1800;
+
+    /** @var int Assumed rasterisation DPI when measuring glyph widths with GD. */
+    const FIT_DPI = 96;
+
+    /**
+     * @var string[] Font files probed, in order, to measure text width. The list
+     * mirrors {@see self::RENDER_FONTS}: metric-compatible faces LibreOffice also
+     * substitutes in, so a measurement here matches what it will render.
+     */
+    const FIT_FONT_CANDIDATES = [
+        '/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ];
+
     /** @var bool|null Cached availability result for this request. */
     private static ?bool $available = null;
 
@@ -194,8 +223,10 @@ class renderer {
         $pptx->copy_content_to($source);
         self::assert_archive_within_limits($source);
         self::apply_render_font($source, $renderfont);
-        // Re-check after the rewrite: a longer font name can grow the XML parts,
-        // so the size caps must hold for the archive actually handed to LibreOffice.
+        self::apply_autofit_shrink($source);
+        // Re-check after the rewrites: a longer font name or added attributes can
+        // grow the XML parts, so the size caps must hold for the archive actually
+        // handed to LibreOffice.
         self::assert_archive_within_limits($source);
 
         $pdfpath = self::convert_to_pdf($source, $dir);
@@ -254,6 +285,299 @@ class renderer {
             }
         }
         $zip->close();
+    }
+
+    /**
+     * Bakes a shrink-to-fit scale into text bodies that ask for one.
+     *
+     * PowerPoint's "Shrink text on overflow" (a bare {@code <a:normAutofit/>})
+     * computes its scale live when the slide is shown and does not persist it in
+     * the file. LibreOffice does not recompute that scale during a headless PDF
+     * conversion, so it draws the text full size and it spills out of the box in
+     * the rendered image. Estimating the overflow here and writing an explicit
+     * {@code fontScale} — which LibreOffice does honour — reproduces the shrink.
+     *
+     * Only bodies that already opt into shrink-to-fit are touched, and only ever
+     * to make text smaller, so a body that already fits is left unchanged. Only
+     * the temporary render copy is modified.
+     *
+     * @param string $source Absolute path to the staged .pptx (modified in place).
+     * @return void
+     */
+    private static function apply_autofit_shrink(string $source): void {
+        $zip = new \ZipArchive();
+        if ($zip->open($source) !== true) {
+            return;
+        }
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = (string) $zip->getNameIndex($i);
+            // Only rendered slide bodies carry the explicit geometry needed to
+            // size the fit; layout/master placeholders inherit theirs.
+            if (!preg_match('#^ppt/slides/slide\d+\.xml$#', $name)) {
+                continue;
+            }
+            $xml = $zip->getFromIndex($i);
+            if ($xml === false || strpos($xml, 'normAutofit') === false) {
+                continue;
+            }
+            $rewritten = self::shrink_slide_autofit($xml);
+            if ($rewritten !== null && $rewritten !== $xml) {
+                $zip->addFromString($name, $rewritten);
+            }
+        }
+        $zip->close();
+    }
+
+    /**
+     * Adds a computed {@code fontScale} to each overflowing autofit body in a slide.
+     *
+     * @param string $xml The slide part's XML.
+     * @return string|null The rewritten XML, or null if it could not be parsed.
+     */
+    private static function shrink_slide_autofit(string $xml): ?string {
+        $doc = new \DOMDocument();
+        $ok = @$doc->loadXML($xml);
+        if ($ok === false) {
+            return null;
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $xpath = new \DOMXPath($doc);
+        $xpath->registerNamespace('a', $a);
+        $xpath->registerNamespace('p', 'http://schemas.openxmlformats.org/presentationml/2006/main');
+        $changed = false;
+        foreach ($xpath->query('//a:normAutofit[not(@fontScale)]') as $naf) {
+            $bodypr = $naf->parentNode;
+            $txbody = $bodypr instanceof \DOMElement ? $bodypr->parentNode : null;
+            $shape = $txbody instanceof \DOMElement ? $txbody->parentNode : null;
+            if (!$shape instanceof \DOMElement) {
+                continue;
+            }
+            $ext = $xpath->query('.//a:xfrm/a:ext', $shape)->item(0);
+            if (!$ext instanceof \DOMElement) {
+                continue;
+            }
+            $cx = (int) $ext->getAttribute('cx');
+            $cy = (int) $ext->getAttribute('cy');
+            if ($cx <= 0 || $cy <= 0) {
+                continue;
+            }
+            $scale = self::estimate_fit_scale($xpath, $bodypr, $txbody, $cx, $cy);
+            if ($scale >= 1.0) {
+                continue;
+            }
+            $naf->setAttribute('fontScale', (string) (int) round($scale * 100000));
+            // A modest line-spacing reduction, as PowerPoint pairs with a shrink.
+            $lnspc = (int) round((1.0 - $scale) * 50000);
+            if ($lnspc > 0) {
+                $naf->setAttribute('lnSpcReduction', (string) min(20000, $lnspc));
+            }
+            $changed = true;
+        }
+        if (!$changed) {
+            return $xml;
+        }
+        $out = $doc->saveXML();
+        return $out === false ? null : $out;
+    }
+
+    /**
+     * Estimates the font scale that would let a text body fit its box height.
+     *
+     * The estimate wraps each paragraph by average glyph advance and sums the line
+     * advances; when that exceeds the box's usable height the ratio (with a small
+     * safety margin) becomes the scale, clamped to a sane floor. It intentionally
+     * errs towards shrinking a little more rather than leaving text overflowing.
+     *
+     * @param \DOMXPath $xpath A path bound to the slide's namespaces.
+     * @param \DOMNode $bodypr The a:bodyPr element (source of text insets).
+     * @param \DOMNode $txbody The p:txBody element holding the paragraphs.
+     * @param int $cx Box width in EMU.
+     * @param int $cy Box height in EMU.
+     * @return float A scale in (0, 1]; 1.0 means the body already fits.
+     */
+    private static function estimate_fit_scale(
+        \DOMXPath $xpath,
+        \DOMNode $bodypr,
+        \DOMNode $txbody,
+        int $cx,
+        int $cy
+    ): float {
+        $emuperpt = 12700.0;
+        $lins = self::inset($bodypr, 'lIns', 91440);
+        $rins = self::inset($bodypr, 'rIns', 91440);
+        $tins = self::inset($bodypr, 'tIns', 45720);
+        $bins = self::inset($bodypr, 'bIns', 45720);
+        $innerwidthpt = ($cx - $lins - $rins) / $emuperpt;
+        $innerheightpt = ($cy - $tins - $bins) / $emuperpt;
+        if ($innerwidthpt <= 0 || $innerheightpt <= 0) {
+            return 1.0;
+        }
+        $fontpath = self::fit_font_path();
+        $neededpt = 0.0;
+        foreach ($xpath->query('a:p', $txbody) as $para) {
+            $szs = [];
+            foreach ($xpath->query('.//a:rPr/@sz | a:pPr/a:defRPr/@sz | a:endParaRPr/@sz', $para) as $szattr) {
+                $szs[] = (int) $szattr->nodeValue;
+            }
+            $sizept = ($szs ? max($szs) : self::FIT_DEFAULT_SZ) / 100.0;
+            $marl = 0;
+            $ppr = $xpath->query('a:pPr', $para)->item(0);
+            if ($ppr instanceof \DOMElement && $ppr->hasAttribute('marL')) {
+                $marl = (int) $ppr->getAttribute('marL');
+            }
+            $availpt = $innerwidthpt - ($marl / $emuperpt);
+            if ($availpt <= 0) {
+                $availpt = $innerwidthpt;
+            }
+            $text = '';
+            foreach ($xpath->query('.//a:t', $para) as $t) {
+                $text .= $t->textContent;
+            }
+            $lines = self::count_wrapped_lines($text, $sizept, $availpt, $fontpath);
+            $neededpt += $lines * $sizept * self::FIT_LINE_HEIGHT;
+            $neededpt += self::space_before_pt($ppr, $sizept);
+        }
+        if ($neededpt <= 0) {
+            return 1.0;
+        }
+        $budget = $innerheightpt * self::FIT_TARGET_FILL;
+        if ($neededpt <= $budget) {
+            return 1.0;
+        }
+        return max(self::FIT_MIN_SCALE, $budget / $neededpt);
+    }
+
+    /**
+     * Counts the display lines a paragraph wraps to within an available width.
+     *
+     * When GD and a metric font are available the words are measured and wrapped
+     * greedily, matching how LibreOffice lays the line out; otherwise an average
+     * glyph advance stands in. Either way an empty paragraph still occupies a line.
+     *
+     * @param string $text The paragraph's plain text.
+     * @param float $sizept The font size in points.
+     * @param float $availpt The usable line width in points.
+     * @param string $fontpath A measurable TTF path, or '' to use the estimate.
+     * @return int The line count (at least 1).
+     */
+    private static function count_wrapped_lines(string $text, float $sizept, float $availpt, string $fontpath): int {
+        $words = preg_split('/\s+/', trim($text), -1, PREG_SPLIT_NO_EMPTY);
+        if (!$words) {
+            return 1;
+        }
+        if ($fontpath === '' || $sizept <= 0) {
+            $chars = function_exists('mb_strlen') ? mb_strlen($text) : strlen($text);
+            $charsperline = max(1, (int) floor($availpt / (self::FIT_CHAR_WIDTH * $sizept)));
+            return max(1, (int) ceil($chars / $charsperline));
+        }
+        $lines = 0;
+        $current = '';
+        foreach ($words as $word) {
+            // A single token wider than the line (LibreOffice breaks it mid-word,
+            // e.g. at a slash) spans several lines on its own.
+            $wordwidth = self::text_width_pt($word, $sizept, $fontpath);
+            if ($wordwidth > $availpt) {
+                if ($current !== '') {
+                    $lines++;
+                    $current = '';
+                }
+                $lines += max(1, (int) ceil($wordwidth / $availpt));
+                continue;
+            }
+            $candidate = $current === '' ? $word : $current . ' ' . $word;
+            if ($current !== '' && self::text_width_pt($candidate, $sizept, $fontpath) > $availpt) {
+                $lines++;
+                $current = $word;
+            } else {
+                $current = $candidate;
+            }
+        }
+        if ($current !== '') {
+            $lines++;
+        }
+        return max(1, $lines);
+    }
+
+    /**
+     * Measures a string's rendered width in points for a font size.
+     *
+     * @param string $text The text to measure.
+     * @param float $sizept The font size in points.
+     * @param string $fontpath An existing TTF path.
+     * @return float The width in points (0 if it could not be measured).
+     */
+    private static function text_width_pt(string $text, float $sizept, string $fontpath): float {
+        $box = @imagettfbbox($sizept, 0, $fontpath, $text);
+        if (!is_array($box)) {
+            return 0.0;
+        }
+        $widthpx = abs($box[2] - $box[0]);
+        // GD rasterises the point size at FIT_DPI; convert the pixel width back to
+        // points so the comparison against the box (also in points) is consistent.
+        return $widthpx * 72.0 / self::FIT_DPI;
+    }
+
+    /**
+     * Returns the first measurable metric font on disk, or '' if none is present.
+     *
+     * @return string An existing TTF path, or '' when width must be estimated.
+     */
+    private static function fit_font_path(): string {
+        if (!function_exists('imagettfbbox')) {
+            return '';
+        }
+        foreach (self::FIT_FONT_CANDIDATES as $path) {
+            if (is_readable($path)) {
+                return $path;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Returns a paragraph's space-before in points.
+     *
+     * A list paragraph usually reserves space above it; counting it keeps the fit
+     * estimate from running short. Both the point form (a:spcPts, in 1/100 pt) and
+     * the percentage form (a:spcPct, in 1/1000 %, relative to the line) are read.
+     *
+     * @param \DOMElement|null $ppr The paragraph's a:pPr element, or null.
+     * @param float $sizept The paragraph font size in points (for the percentage form).
+     * @return float The space-before in points (0 when none is declared).
+     */
+    private static function space_before_pt(?\DOMElement $ppr, float $sizept): float {
+        if (!$ppr instanceof \DOMElement) {
+            return 0.0;
+        }
+        $a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+        $spcbef = $ppr->getElementsByTagNameNS($a, 'spcBef')->item(0);
+        if (!$spcbef instanceof \DOMElement) {
+            return 0.0;
+        }
+        $pts = $spcbef->getElementsByTagNameNS($a, 'spcPts')->item(0);
+        if ($pts instanceof \DOMElement && $pts->hasAttribute('val')) {
+            return ((int) $pts->getAttribute('val')) / 100.0;
+        }
+        $pct = $spcbef->getElementsByTagNameNS($a, 'spcPct')->item(0);
+        if ($pct instanceof \DOMElement && $pct->hasAttribute('val')) {
+            return (((int) $pct->getAttribute('val')) / 100000.0) * $sizept;
+        }
+        return 0.0;
+    }
+
+    /**
+     * Reads a text-inset attribute from a:bodyPr, in EMU.
+     *
+     * @param \DOMNode $bodypr The a:bodyPr element.
+     * @param string $attr The inset attribute name (lIns/rIns/tIns/bIns).
+     * @param int $default The OOXML default when the attribute is absent.
+     * @return int The inset in EMU.
+     */
+    private static function inset(\DOMNode $bodypr, string $attr, int $default): int {
+        if ($bodypr instanceof \DOMElement && $bodypr->hasAttribute($attr)) {
+            return (int) $bodypr->getAttribute($attr);
+        }
+        return $default;
     }
 
     /**

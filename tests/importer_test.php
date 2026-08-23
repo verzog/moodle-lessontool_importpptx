@@ -1741,6 +1741,102 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * Builds a .pptx whose single slide is the given XML, runs the private
+     * shrink-to-fit pass, and returns the slide XML afterwards.
+     *
+     * @param string $slidexml The slide part's XML.
+     * @return string The slide XML after the autofit rewrite.
+     */
+    private function apply_autofit_shrink(string $slidexml): string {
+        $path = make_request_directory() . '/deck.pptx';
+        $zip = new \ZipArchive();
+        $zip->open($path, \ZipArchive::CREATE);
+        $zip->addFromString('ppt/slides/slide1.xml', $slidexml);
+        $zip->close();
+        $method = new \ReflectionMethod(\local_lessonimportpptx\office\renderer::class, 'apply_autofit_shrink');
+        $method->setAccessible(true);
+        $method->invoke(null, $path);
+        $read = new \ZipArchive();
+        $read->open($path);
+        $slide = $read->getFromName('ppt/slides/slide1.xml');
+        $read->close();
+        return $slide;
+    }
+
+    /**
+     * Wraps a text body of the given box size and paragraphs in a slide shape.
+     *
+     * @param int $cx Box width in EMU.
+     * @param int $cy Box height in EMU.
+     * @param string $paras The paragraph XML for the body.
+     * @param string $autofit The a:normAutofit element to use.
+     * @param bool $withgeom Whether to give the shape an explicit a:xfrm.
+     * @return string The slide XML.
+     */
+    private function autofit_slide(int $cx, int $cy, string $paras, string $autofit, bool $withgeom = true): string {
+        $xfrm = $withgeom
+            ? '<a:xfrm><a:off x="0" y="0"/><a:ext cx="' . $cx . '" cy="' . $cy . '"/></a:xfrm>'
+            : '';
+        return '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+            . ' xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            . '<p:cSld><p:spTree><p:sp><p:spPr>' . $xfrm . '</p:spPr>'
+            . '<p:txBody><a:bodyPr>' . $autofit . '</a:bodyPr>' . $paras . '</p:txBody>'
+            . '</p:sp></p:spTree></p:cSld></p:sld>';
+    }
+
+    /**
+     * A body that PowerPoint would shrink to fit gets an explicit, sane fontScale
+     * baked in so LibreOffice reproduces the shrink.
+     */
+    public function test_autofit_shrinks_overflowing_body(): void {
+        $this->resetAfterTest();
+        // Six 32pt lines cannot fit a 1.5in x 0.8in box under any measurement.
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink($this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit/>'));
+        $this->assertMatchesRegularExpression('/<a:normAutofit\b[^>]*\bfontScale="(\d+)"/', $slide);
+        preg_match('/fontScale="(\d+)"/', $slide, $m);
+        $scale = (int) $m[1];
+        $this->assertGreaterThanOrEqual(30000, $scale);
+        $this->assertLessThan(100000, $scale);
+    }
+
+    /**
+     * A body that already fits its box is left untouched.
+     */
+    public function test_autofit_leaves_fitting_body_alone(): void {
+        $this->resetAfterTest();
+        $paras = '<a:p><a:r><a:rPr sz="1800"/><a:t>Hi</a:t></a:r></a:p>';
+        $slide = $this->apply_autofit_shrink($this->autofit_slide(9144000, 5486400, $paras, '<a:normAutofit/>'));
+        $this->assertStringNotContainsString('fontScale', $slide);
+    }
+
+    /**
+     * A fontScale PowerPoint already persisted is honoured, not overwritten.
+     */
+    public function test_autofit_preserves_existing_scale(): void {
+        $this->resetAfterTest();
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit fontScale="90000"/>')
+        );
+        $this->assertSame(1, substr_count($slide, 'fontScale'));
+        $this->assertStringContainsString('fontScale="90000"', $slide);
+    }
+
+    /**
+     * A body whose geometry is inherited (no slide-level a:xfrm) is skipped, since
+     * its box size cannot be measured from the slide alone.
+     */
+    public function test_autofit_skips_body_without_geometry(): void {
+        $this->resetAfterTest();
+        $paras = str_repeat('<a:p><a:r><a:rPr sz="3200"/><a:t>Technique</a:t></a:r></a:p>', 6);
+        $slide = $this->apply_autofit_shrink(
+            $this->autofit_slide(1371600, 731520, $paras, '<a:normAutofit/>', false)
+        );
+        $this->assertStringNotContainsString('fontScale', $slide);
+    }
+
+    /**
      * Image pages are titled from each slide's own title, falling back to
      * "Slide N" for a slide with no title placeholder.
      */
