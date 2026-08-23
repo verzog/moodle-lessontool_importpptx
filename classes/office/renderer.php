@@ -87,7 +87,7 @@ class renderer {
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     ];
 
-    /** @var array<string, string> Render-font name to the TTF used to measure it. */
+    /** @var array Render-font name (string) to the TTF path (string) used to measure it. */
     const FIT_FONT_FILES = [
         'Carlito' => '/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf',
         'Liberation Sans' => '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
@@ -489,9 +489,9 @@ class renderer {
      * @param \DOMNode $txbody The p:txBody element holding the paragraphs.
      * @param float $innerwidthpt The box's usable width in points.
      * @param float $emuperpt EMU per point.
-     * @return array<int, array{size: float, avail: float, segments: string[],
-     *     lnspc: ?array{unit: string, val: float}, before: ?array{unit: string, val: float},
-     *     after: ?array{unit: string, val: float}}> One entry per paragraph.
+     * @return array One entry per paragraph, each with keys: size (float pt),
+     *     avail (float pt), segments (string[]), and lnspc/before/after (each an
+     *     array with keys unit and val, or null).
      */
     private static function collect_paragraphs(
         \DOMXPath $xpath,
@@ -526,7 +526,7 @@ class renderer {
      * Decides whether a body fits its box height (and width, when it cannot wrap)
      * at a given font scale.
      *
-     * @param array<int, array<string, mixed>> $paras Metadata from collect_paragraphs().
+     * @param array $paras Metadata from collect_paragraphs().
      * @param float $scale The font scale to evaluate (1.0 = full size).
      * @param string $fontpath A measurable TTF path, or '' to use the estimate.
      * @param float $budget The usable box height in points.
@@ -555,7 +555,7 @@ class renderer {
     /**
      * Sums the rendered height of every paragraph at a given font scale.
      *
-     * @param array<int, array<string, mixed>> $paras Metadata from collect_paragraphs().
+     * @param array $paras Metadata from collect_paragraphs().
      * @param float $scale The font scale to evaluate (1.0 = full size).
      * @param string $fontpath A measurable TTF path, or '' to use the estimate.
      * @param bool $nowrap Whether the body keeps each segment on one line.
@@ -580,7 +580,7 @@ class renderer {
     /**
      * The height of one line for a font size, honouring declared line spacing.
      *
-     * @param array{unit: string, val: float}|null $lnspc Line-spacing spec, or null.
+     * @param array|null $lnspc Line-spacing spec (keys unit, val), or null.
      * @param float $sizept The (already scaled) font size in points.
      * @return float The line advance in points.
      */
@@ -672,8 +672,8 @@ class renderer {
      *
      * @param \DOMElement|null $ppr The paragraph's a:pPr, or null.
      * @param string $tag The spacing element's local name.
-     * @return array{unit: string, val: float}|null 'pts' in points, 'pct' as a
-     *     fraction (1.0 = 100%), or null when the element is absent.
+     * @return array|null Keys unit ('pts'/'pct') and val — points for 'pts', a
+     *     fraction (1.0 = 100%) for 'pct' — or null when the element is absent.
      */
     private static function spacing_spec(?\DOMElement $ppr, string $tag): ?array {
         if (!$ppr instanceof \DOMElement) {
@@ -698,7 +698,7 @@ class renderer {
     /**
      * Converts a space-before/after spec to points at a given font size.
      *
-     * @param array{unit: string, val: float}|null $spec A spacing spec, or null.
+     * @param array|null $spec A spacing spec (keys unit, val), or null.
      * @param float $sizept The (already scaled) font size in points.
      * @return float The spacing in points (0 when none).
      */
