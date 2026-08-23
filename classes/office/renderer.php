@@ -429,7 +429,7 @@ class renderer {
      *
      * @param \DOMXPath $xpath A path bound to the slide's namespaces.
      * @param \DOMNode $txbody The p:txBody element.
-     * @return array{0: string, 1: string} The placeholder type and index.
+     * @return array The placeholder [type, idx], each a string ('' when absent).
      */
     private static function placeholder_key(\DOMXPath $xpath, \DOMNode $txbody): array {
         $shape = $txbody->parentNode;
@@ -698,7 +698,7 @@ class renderer {
      * Parses a slide layout's placeholder sizes into by-index and by-type maps.
      *
      * @param string|false $xml The layout XML, or false.
-     * @return array{0: array, 1: array} [idx => level => sz, type => level => sz].
+     * @return array A [by-index, by-type] pair; each maps a key to level => sz.
      */
     private static function parse_layout_sizes($xml): array {
         $byidx = [];
