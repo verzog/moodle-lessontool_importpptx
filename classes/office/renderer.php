@@ -540,7 +540,7 @@ class renderer {
         if (!$nowrap) {
             return true;
         }
-        // wrap="none" keeps every line intact, so the widest line must also fit.
+        // A wrap="none" body keeps every line intact, so the widest line must fit.
         foreach ($paras as $para) {
             $sizept = $para['size'] * $scale;
             foreach ($para['segments'] as $segment) {
@@ -829,8 +829,10 @@ class renderer {
         if (!function_exists('imagettfbbox')) {
             return '';
         }
-        if ($renderfont !== '' && isset(self::FIT_FONT_FILES[$renderfont])
-                && is_readable(self::FIT_FONT_FILES[$renderfont])) {
+        if (
+            $renderfont !== '' && isset(self::FIT_FONT_FILES[$renderfont])
+            && is_readable(self::FIT_FONT_FILES[$renderfont])
+        ) {
             return self::FIT_FONT_FILES[$renderfont];
         }
         foreach (self::FIT_FONT_CANDIDATES as $path) {
