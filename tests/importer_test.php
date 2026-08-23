@@ -126,6 +126,12 @@ final class importer_test extends \advanced_testcase {
         $this->assertStringContainsString('col-12 col-md-6 col-lg-4', $html);
         $this->assertStringContainsString('<div class="local-lessonimportpptx-cap">13:00</div>', $html);
         $this->assertCount(3, $pages[2]->images);
+        // The grid row is wrapped so its negative margins cannot raise a
+        // horizontal scrollbar over the content.
+        $this->assertStringContainsString(
+            '<div class="container-fluid local-lessonimportpptx-rowwrap"><div class="row g-3 local-lessonimportpptx-grid"',
+            $html
+        );
     }
 
     /**

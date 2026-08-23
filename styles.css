@@ -30,6 +30,14 @@
     overflow-wrap: break-word;
 }
 
+/* Grids, card groups and columns are Bootstrap rows, whose negative horizontal
+   margins would otherwise bleed past Moodle's overflow:auto content wrapper and
+   raise a horizontal scrollbar that clips the bottom row. The container-fluid
+   padding absorbs the margins; clipping here guards themes that zero it. */
+.local-lessonimportpptx-rowwrap {
+    overflow-x: clip;
+}
+
 .local-lessonimportpptx-grid .local-lessonimportpptx-cap {
     font-size: 0.9rem;
     font-weight: 600;
