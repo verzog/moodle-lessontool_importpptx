@@ -470,7 +470,7 @@ class html_builder {
             }
             $cells .= '<div class="' . $col . '">' . $inner . '</div>';
         }
-        return '<div class="row g-3 mb-3 local-lessonimportpptx-cols">' . $cells . '</div>';
+        return self::row_wrap('<div class="row g-3 mb-3 local-lessonimportpptx-cols">' . $cells . '</div>');
     }
 
     /**
@@ -765,7 +765,24 @@ class html_builder {
             $cells .= '<div class="' . $col . '">' . $cap
                 . '<img src="' . $ref . '" alt="" class="img-fluid"></div>';
         }
-        return '<div class="row g-3 local-lessonimportpptx-grid">' . $cells . '</div>';
+        return self::row_wrap('<div class="row g-3 local-lessonimportpptx-grid">' . $cells . '</div>');
+    }
+
+    /**
+     * Wraps a Bootstrap .row so its negative horizontal margins cannot bleed.
+     *
+     * A .row has negative left/right margins (half the gutter). Emitted straight
+     * into the book/lesson content — which Moodle wraps in an overflow:auto box —
+     * those margins make the row a few pixels wider than its parent, raising a
+     * horizontal scrollbar that overlaps and clips the bottom row of a grid. A
+     * container-fluid's own horizontal padding absorbs the margins, so the row
+     * lines up with its parent and no scrollbar appears.
+     *
+     * @param string $rowhtml A single .row element's HTML.
+     * @return string The row wrapped in a container-fluid.
+     */
+    private static function row_wrap(string $rowhtml): string {
+        return '<div class="container-fluid local-lessonimportpptx-rowwrap">' . $rowhtml . '</div>';
     }
 
     /**
@@ -826,8 +843,8 @@ class html_builder {
             $cards[] = '<div class="col local-lessonimportpptx-card">' . $card . '</div>';
             $modals[] = $modal;
         }
-        $row = '<div class="row ' . $rowcols . ' g-4 local-lessonimportpptx-cardgroup">'
-            . implode('', $cards) . '</div>';
+        $row = self::row_wrap('<div class="row ' . $rowcols . ' g-4 local-lessonimportpptx-cardgroup">'
+            . implode('', $cards) . '</div>');
         return $row . "\n" . implode("\n", $modals);
     }
 
