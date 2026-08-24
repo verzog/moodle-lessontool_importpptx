@@ -53,12 +53,13 @@ class renderer {
      * @var string[] Font families a render may be forced to use. Restricting the
      * choice keeps an arbitrary (and possibly unsafe) name out of the theme XML,
      * and each is a widely packaged, metric-compatible face that keeps text close
-     * to its intended size: Carlito matches Calibri and the newer Aptos, and the
-     * Liberation set matches Arial/Times. (A metric-incompatible face such as
-     * DejaVu Sans is deliberately not offered — forcing it on a deck sized for a
-     * narrower font makes the text over- or undersized.)
+     * to its intended size: Carlito matches Calibri and the newer Aptos, the
+     * Liberation set matches Arial/Times, and Caladea matches Cambria (Office's
+     * serif). (A metric-incompatible face such as DejaVu Sans is deliberately not
+     * offered — forcing it on a deck sized for a narrower font makes the text over-
+     * or undersized.)
      */
-    const RENDER_FONTS = ['Carlito', 'Liberation Sans', 'Liberation Serif'];
+    const RENDER_FONTS = ['Carlito', 'Liberation Sans', 'Liberation Serif', 'Caladea'];
 
     /** @var float Line advance as a multiple of the font point size, for fit estimates. */
     const FIT_LINE_HEIGHT = 1.2;
@@ -94,6 +95,7 @@ class renderer {
         'Carlito' => '/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf',
         'Liberation Sans' => '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
         'Liberation Serif' => '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
+        'Caladea' => '/usr/share/fonts/truetype/crosextra/Caladea-Regular.ttf',
     ];
 
     /**
