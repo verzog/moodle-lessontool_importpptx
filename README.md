@@ -211,9 +211,11 @@ applies to both modes:
   decks in **Aptos**, Office's current default, or **Calibri**). Choosing a font
   here rewrites every text font in the deck to that one family *before*
   rendering, so the render uses a font you know is installed and sized to fit —
-  `Carlito` matches Calibri/Aptos metrics and is the usual pick. It affects only
-  the rendered slide images, never the editable text, and the chosen font must be
-  installed where LibreOffice runs (e.g. `apt install fonts-crosextra-carlito`).
+  `Carlito` matches Calibri/Aptos metrics and is the usual pick; `Liberation
+  Sans`/`Liberation Serif` match Arial/Times, and `Caladea` matches Cambria
+  (Office's serif). It affects only the rendered slide images, never the editable
+  text, and the chosen font must be installed where LibreOffice runs (e.g. `apt
+  install fonts-crosextra-carlito fonts-crosextra-caladea fonts-liberation`).
 
 When slides are rendered to images, text boxes set to PowerPoint's *Shrink text
 on overflow* are handled automatically. LibreOffice does not apply that shrink
