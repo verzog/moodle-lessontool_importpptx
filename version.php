@@ -29,10 +29,10 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_lessonimportpptx';
-$plugin->version   = 2026082302;
+$plugin->version   = 2026082303;
 $plugin->requires  = 2025041400;
 $plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.11.2';
+$plugin->release   = '1.11.3';
 $plugin->dependencies = [
     'mod_lesson' => ANY_VERSION,
 ];
