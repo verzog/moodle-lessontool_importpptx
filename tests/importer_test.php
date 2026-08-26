@@ -229,8 +229,7 @@ final class importer_test extends \advanced_testcase {
         $this->resetAfterTest();
         $pptx = $this->make_stored_file();
 
-        $renderer = new class('https://render.example.com', 'secret')
-            extends \local_lessonimportpptx\office\cloud_renderer {
+        $renderer = new class ('https://render.example.com', 'secret') extends \local_lessonimportpptx\office\cloud_renderer {
             /** @var array The last posted request payload. */
             public array $captured = [];
 
