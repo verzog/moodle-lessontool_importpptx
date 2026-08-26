@@ -202,6 +202,71 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * The backend factory prefers the cloud renderer once the service is
+     * configured, and reports the feature as available.
+     */
+    public function test_backend_factory_prefers_cloud_when_configured(): void {
+        $this->resetAfterTest();
+        $this->assertFalse(\local_lessonimportpptx\office\cloud_renderer::is_configured());
+
+        set_config('cloudenabled', 1, 'local_lessonimportpptx');
+        set_config('cloudurl', 'https://render.example.com', 'local_lessonimportpptx');
+        set_config('cloudkey', 'secret', 'local_lessonimportpptx');
+
+        $this->assertTrue(\local_lessonimportpptx\office\cloud_renderer::is_configured());
+        $this->assertTrue(\local_lessonimportpptx\office\backend_factory::available());
+        $this->assertInstanceOf(
+            \local_lessonimportpptx\office\cloud_renderer::class,
+            \local_lessonimportpptx\office\backend_factory::make()
+        );
+    }
+
+    /**
+     * The cloud renderer parses the deck, reconstructs each slide as canvas HTML,
+     * posts it to the service, and yields one page image per returned slide.
+     */
+    public function test_cloud_renderer_posts_reconstructed_slides(): void {
+        $this->resetAfterTest();
+        $pptx = $this->make_stored_file();
+
+        $renderer = new class('https://render.example.com', 'secret')
+            extends \local_lessonimportpptx\office\cloud_renderer {
+            /** @var array The last posted request payload. */
+            public array $captured = [];
+
+            /**
+             * Captures the payload and returns one page per posted slide.
+             *
+             * @param array $payload The request body.
+             * @return array[] The faked pages array.
+             */
+            protected function post_render(array $payload): array {
+                $this->captured = $payload;
+                $pages = [];
+                foreach (array_keys($payload['slides']) as $i) {
+                    $pages[] = ['index' => $i + 1, 'data' => base64_encode('PNG' . $i)];
+                }
+                return $pages;
+            }
+        };
+
+        $out = iterator_to_array($renderer->render_pages($pptx, 1600));
+
+        $this->assertNotEmpty($out);
+        $this->assertCount(count($renderer->captured['slides']), $out);
+        [$page, $filename, $bytes] = $out[0];
+        $this->assertSame(1, $page);
+        $this->assertSame('slide-1.png', $filename);
+        $this->assertSame('PNG0', $bytes);
+        $slide = $renderer->captured['slides'][0];
+        $this->assertStringContainsString('local-lessonimportpptx-slide', $slide['html']);
+        $this->assertArrayHasKey('width', $slide);
+        $this->assertArrayHasKey('height', $slide);
+        $this->assertArrayHasKey('scale', $slide);
+        $this->assertArrayHasKey('assets', $slide);
+    }
+
+    /**
      * With the card-group option on, an image sitting beside text (a column)
      * becomes a click-to-enlarge card, not a plain picture, while staying in
      * its column beside the text.

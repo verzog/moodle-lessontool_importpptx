@@ -7,6 +7,22 @@ semantic-ish versioning in `$plugin->release`. Routine follow-ups that only
 satisfied the code checker (phpcs/phpdoc) are folded into the release they
 belong to.
 
+## 1.13.0 – 2026-08-26
+
+### Added
+- Optional **external render service** backend for faithful-image and
+  complex-slide import. When configured (Site administration → the plugin's
+  settings: service URL, API key, enable), the importer reconstructs each slide
+  as HTML and posts it to the service, which returns a page image — so image
+  import works without LibreOffice and poppler on the Moodle server. A local
+  LibreOffice install is still used when the service is not configured.
+- `render_backend` selection is centralised in a small factory; the faithful-
+  image option is offered whenever either backend is available.
+
+### Changed
+- Privacy metadata now declares the external render service as a data
+  destination (slide content is sent there only when the service is enabled).
+
 ## 1.12.1 – 2026-08-24
 
 ### Added

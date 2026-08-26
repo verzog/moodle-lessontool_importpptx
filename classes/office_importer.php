@@ -26,6 +26,7 @@ namespace local_lessonimportpptx;
 
 use local_lessonimportpptx\office\renderer;
 use local_lessonimportpptx\office\render_backend;
+use local_lessonimportpptx\office\backend_factory;
 use local_lessonimportpptx\pptx\package;
 use local_lessonimportpptx\pptx\slide;
 use local_lessonimportpptx\pptx\html_builder;
@@ -423,7 +424,7 @@ class office_importer {
         // so a failed run (or adhoc retry) never leaves or duplicates partial pages.
         $lock = page_writer::acquire_lock($this->lesson->id);
         try {
-            $renderer = $this->renderer ?? new renderer();
+            $renderer = $this->renderer ?? backend_factory::make() ?? new renderer();
             $stagedir = make_request_directory();
             $titles = self::extract_titles($pptx);
 

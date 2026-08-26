@@ -165,13 +165,19 @@ class import_form extends \moodleform {
     private function availability_html(): string {
         $poppler = !empty($this->_customdata['popplerenabled']);
         $libreoffice = !empty($this->_customdata['libreofficeenabled']);
-        // Missing binaries for the two features that need LibreOffice and poppler.
+        $cloud = !empty($this->_customdata['cloudenabled']);
+        // The image features run on a local LibreOffice + poppler pair or on the
+        // external render service. When the service is configured they are
+        // available with no local binaries, so nothing is reported missing.
+        $office = ($poppler && $libreoffice) || $cloud;
         $imagemissing = [];
-        if (!$libreoffice) {
-            $imagemissing[] = 'LibreOffice';
-        }
-        if (!$poppler) {
-            $imagemissing[] = 'Poppler';
+        if (!$office) {
+            if (!$libreoffice) {
+                $imagemissing[] = 'LibreOffice';
+            }
+            if (!$poppler) {
+                $imagemissing[] = 'Poppler';
+            }
         }
         $rows = $this->availability_row(
             get_string('availabilitypdf', 'local_lessonimportpptx'),
@@ -180,12 +186,12 @@ class import_form extends \moodleform {
         );
         $rows .= $this->availability_row(
             get_string('availabilityfaithful', 'local_lessonimportpptx'),
-            $poppler && $libreoffice,
+            $office,
             $imagemissing
         );
         $rows .= $this->availability_row(
             get_string('availabilitycomplex', 'local_lessonimportpptx'),
-            $poppler && $libreoffice,
+            $office,
             $imagemissing
         );
         return '<div class="local-lessonimportpptx-availability mb-2">'

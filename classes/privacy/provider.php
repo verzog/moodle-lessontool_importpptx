@@ -25,16 +25,26 @@
 namespace local_lessonimportpptx\privacy;
 
 /**
- * Privacy provider. This plugin stores no personal data of its own; the
- * lesson pages and files it creates belong to mod_lesson.
+ * Privacy provider. This plugin stores no personal data of its own; the lesson
+ * pages and files it creates belong to mod_lesson. It declares one external
+ * data flow: when the optional render service is configured, reconstructed
+ * slide content is sent to it to be rendered into page images.
  */
-class provider implements \core_privacy\local\metadata\null_provider {
+class provider implements \core_privacy\local\metadata\provider {
     /**
-     * Returns the language string explaining why this plugin stores no data.
+     * Describes the plugin's data flows for the privacy registry.
      *
-     * @return string The identifier of the reason string.
+     * @param \core_privacy\local\metadata\collection $collection The metadata collection to add to.
+     * @return \core_privacy\local\metadata\collection The updated collection.
      */
-    public static function get_reason(): string {
-        return 'privacy:metadata';
+    public static function get_metadata(
+        \core_privacy\local\metadata\collection $collection
+    ): \core_privacy\local\metadata\collection {
+        $collection->add_external_location_link(
+            'pptx_render_service',
+            ['slidecontent' => 'privacy:metadata:pptx_render_service:slidecontent'],
+            'privacy:metadata:pptx_render_service'
+        );
+        return $collection;
     }
 }

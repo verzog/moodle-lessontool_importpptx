@@ -27,8 +27,8 @@ namespace local_lessonimportpptx;
 use local_lessonimportpptx\pptx\package;
 use local_lessonimportpptx\pptx\slide;
 use local_lessonimportpptx\pptx\html_builder;
-use local_lessonimportpptx\office\renderer;
 use local_lessonimportpptx\office\render_backend;
+use local_lessonimportpptx\office\backend_factory;
 
 /**
  * Reads a .pptx and creates one lesson content page per slide, in slide order.
@@ -217,7 +217,7 @@ class importer {
         if (!$this->smartartimages) {
             return [];
         }
-        $renderer = $this->renderer ?? (renderer::is_available() ? new renderer() : null);
+        $renderer = $this->renderer ?? backend_factory::make();
         if ($renderer === null) {
             return [];
         }

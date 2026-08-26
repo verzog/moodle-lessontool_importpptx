@@ -99,7 +99,7 @@ function local_lessonimportpptx_importer(stored_file $file, stdClass $lesson, co
         return new \local_lessonimportpptx\pdf_importer($lesson, $context, $options);
     }
     $mode = (string) ($options['importmode'] ?? 'editable');
-    if ($mode === 'images' && \local_lessonimportpptx\office\renderer::is_available()) {
+    if ($mode === 'images' && \local_lessonimportpptx\office\backend_factory::available()) {
         return new \local_lessonimportpptx\office_importer($lesson, $context, $options);
     }
     return new \local_lessonimportpptx\importer($lesson, $context, $options);
@@ -144,7 +144,7 @@ function local_lessonimportpptx_count(stored_file $file, array $options = []): i
         return $count;
     }
     $mode = (string) ($options['importmode'] ?? 'editable');
-    if ($mode === 'images' && \local_lessonimportpptx\office\renderer::is_available()) {
+    if ($mode === 'images' && \local_lessonimportpptx\office\backend_factory::available()) {
         return \local_lessonimportpptx\office_importer::count_slides($file);
     }
     return \local_lessonimportpptx\importer::count_slides($file);
