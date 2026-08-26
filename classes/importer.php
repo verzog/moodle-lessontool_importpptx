@@ -28,6 +28,7 @@ use local_lessonimportpptx\pptx\package;
 use local_lessonimportpptx\pptx\slide;
 use local_lessonimportpptx\pptx\html_builder;
 use local_lessonimportpptx\office\renderer;
+use local_lessonimportpptx\office\render_backend;
 
 /**
  * Reads a .pptx and creates one lesson content page per slide, in slide order.
@@ -64,8 +65,8 @@ class importer {
     /** @var string Font family forced on the deck before rendering ('' keeps its own). */
     private string $renderfont;
 
-    /** @var renderer|null The slide-image render backend (injectable for testing). */
-    private ?renderer $renderer;
+    /** @var render_backend|null The slide-image render backend (injectable for testing). */
+    private ?render_backend $renderer;
 
     /**
      * Constructor.
@@ -76,13 +77,13 @@ class importer {
      *                       (int), 'cardgroup' (bool), 'bodysize' (int pt),
      *                       'adjacentsize' (int pt), 'smartartimages' (bool) and
      *                       'renderfont' (string font family for rendered slides).
-     * @param renderer|null $renderer The image render backend, or null for the default.
+     * @param render_backend|null $renderer The image render backend, or null for the default.
      */
     public function __construct(
         \stdClass $lesson,
         \context_module $context,
         array $options = [],
-        ?renderer $renderer = null
+        ?render_backend $renderer = null
     ) {
         $this->lesson = $lesson;
         $this->context = $context;

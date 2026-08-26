@@ -25,6 +25,7 @@
 namespace local_lessonimportpptx;
 
 use local_lessonimportpptx\office\renderer;
+use local_lessonimportpptx\office\render_backend;
 use local_lessonimportpptx\pptx\package;
 use local_lessonimportpptx\pptx\slide;
 use local_lessonimportpptx\pptx\html_builder;
@@ -48,8 +49,8 @@ class office_importer {
     /** @var string Font family forced on the deck before rendering ('' keeps its own). */
     private string $renderfont;
 
-    /** @var renderer|null The render backend (injectable for testing). */
-    private ?renderer $renderer;
+    /** @var render_backend|null The render backend (injectable for testing). */
+    private ?render_backend $renderer;
 
     /**
      * Constructor.
@@ -57,9 +58,14 @@ class office_importer {
      * @param \stdClass $lesson The lesson activity record.
      * @param \context_module $context The lesson's module context.
      * @param array $options Import options ('imagemaxdim' int, 'renderfont' string).
-     * @param renderer|null $renderer The render backend, or null to build the default.
+     * @param render_backend|null $renderer The render backend, or null to build the default.
      */
-    public function __construct(\stdClass $lesson, \context_module $context, array $options = [], ?renderer $renderer = null) {
+    public function __construct(
+        \stdClass $lesson,
+        \context_module $context,
+        array $options = [],
+        ?render_backend $renderer = null
+    ) {
         $this->lesson = $lesson;
         $this->context = $context;
         $this->imagemaxdim = (int) ($options['imagemaxdim'] ?? 1600);
