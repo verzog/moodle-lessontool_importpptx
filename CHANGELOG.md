@@ -7,6 +7,15 @@ semantic-ish versioning in `$plugin->release`. Routine follow-ups that only
 satisfied the code checker (phpcs/phpdoc) are folded into the release they
 belong to.
 
+## 1.12.2 – 2026-08-26
+
+### Added
+- Internal groundwork for an alternative slide-image render backend: a
+  `render_backend` interface (the existing LibreOffice renderer implements it)
+  and a `slide_html_builder` that lays a parsed slide out on a fixed-size stage.
+  These classes are not wired into any import path yet, so there is no change in
+  behaviour; they exist as a seam for future work.
+
 ## 1.12.1 – 2026-08-24
 
 ### Added
