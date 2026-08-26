@@ -29,17 +29,20 @@ namespace local_lessonimportpptx\pptx;
  *
  * Where html_builder reflows a slide's blocks into responsive, editable page
  * markup, this builder lays each block out at its true slide coordinates on a
- * fixed-size stage — the shape geometry (x, y, cx, cy, rotation) the parser
- * already records. The result is a standalone HTML document meant to be
- * rasterised to a page image by a headless browser, so a faithful-image render
- * can be produced from the plugin's own reconstruction instead of by driving
- * LibreOffice.
+ * fixed-size stage — the shape geometry (x, y, cx, cy) the parser already
+ * records. The result is a standalone HTML document meant to be rasterised to a
+ * page image by a headless browser, so a faithful-image render can be produced
+ * from the plugin's own reconstruction instead of by driving LibreOffice.
  *
  * This is scaffolding for that render path: it is deliberately not yet wired
  * into the import flow, and it does not attempt every PowerPoint visual effect.
  * It models what the parser models — positioned text, images and reconstructed
- * SVG — and leaves richer fidelity (gradients, shadows, exact bullet glyphs,
- * tables styling) as follow-up work.
+ * SVG. Known follow-ups before this is faithful, each needing the parser to
+ * carry more than it does today: placeholder titles (extracted to
+ * parsed->title, not left in blocks), placeholder geometry inherited from the
+ * slide layout/master, shape rotation (recorded on shapes, not on blocks),
+ * picture crop/fill (a:srcRect / blipFill), detected section-divider panels,
+ * reconstructed-diagram bounds, and gradients/shadows/bullet glyphs/tables.
  */
 class slide_html_builder {
     /** @var int English Metric Units per CSS pixel (914400 EMU/inch ÷ 96 px/inch). */
@@ -67,7 +70,9 @@ class slide_html_builder {
     private int $slideheight;
 
     /**
-     * @param string $background Stage background colour (CSS), e.g. '#ffffff'.
+     * Prepares a builder for a fixed-size stage.
+     *
+     * @param string $background Stage background as a #rgb/#rrggbb value; anything else falls back to white.
      * @param int $slidewidth Slide width in EMU (defaults to a 16:9 stage).
      * @param int $slideheight Slide height in EMU (defaults to a 16:9 stage).
      */
@@ -76,7 +81,7 @@ class slide_html_builder {
         int $slidewidth = self::DEFAULT_SLIDE_WIDTH,
         int $slideheight = self::DEFAULT_SLIDE_HEIGHT
     ) {
-        $this->background = $background;
+        $this->background = self::safe_colour($background);
         $this->slidewidth = $slidewidth > 0 ? $slidewidth : self::DEFAULT_SLIDE_WIDTH;
         $this->slideheight = $slideheight > 0 ? $slideheight : self::DEFAULT_SLIDE_HEIGHT;
     }
@@ -116,6 +121,11 @@ class slide_html_builder {
      * @return string The shape HTML, or '' when the block has nothing to show.
      */
     private function render_box(block $b): string {
+        if ($b->x === slide::NO_OFFSET || $b->y === slide::NO_OFFSET) {
+            // Geometry that never resolved through the layout/master chain would
+            // land the box far off-stage; skip it rather than emit a stray shape.
+            return '';
+        }
         $inner = $this->inner_html($b);
         if ($inner === '') {
             return '';
@@ -128,7 +138,7 @@ class slide_html_builder {
      * Builds the absolute-position CSS for a block from its EMU geometry.
      *
      * @param block $b The block.
-     * @return string The inline CSS (position, offsets, size, rotation).
+     * @return string The inline CSS (position, offsets, size).
      */
     private function position_style(block $b): string {
         $style = 'position:absolute;'
@@ -139,9 +149,6 @@ class slide_html_builder {
         }
         if ($b->cy > 0) {
             $style .= 'height:' . intdiv($b->cy, self::EMU_PER_PX) . 'px;';
-        }
-        if (!empty($b->rotation)) {
-            $style .= 'transform:rotate(' . (int) $b->rotation . 'deg);';
         }
         return $style;
     }
@@ -217,6 +224,17 @@ class slide_html_builder {
         }
         $this->images[$name] = $mediapath;
         return '@@PLUGINFILE@@/' . $name;
+    }
+
+    /**
+     * Validates a colour so a caller-supplied value cannot break out of the
+     * style attribute it is embedded in.
+     *
+     * @param string $colour Candidate colour.
+     * @return string A safe #rgb/#rrggbb colour, or white when the input is not one.
+     */
+    private static function safe_colour(string $colour): string {
+        return preg_match('/^#[0-9a-fA-F]{3,8}$/', $colour) ? $colour : '#ffffff';
     }
 
     /**
