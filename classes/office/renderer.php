@@ -39,7 +39,7 @@ use local_lessonimportpptx\pptx\package;
  * usable. Everything is invoked with argument arrays (never a shell string), so
  * there is no command-injection surface.
  */
-class renderer {
+class renderer implements render_backend {
     /** @var int Seconds to allow a single LibreOffice conversion before giving up. */
     const CONVERT_TIMEOUT = 120;
 

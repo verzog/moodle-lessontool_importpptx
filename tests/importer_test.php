@@ -155,6 +155,53 @@ final class importer_test extends \advanced_testcase {
     }
 
     /**
+     * The canvas builder lays each block out at its true slide coordinates on a
+     * fixed-size stage (EMU converted to pixels at 96 DPI).
+     */
+    public function test_slide_canvas_positions_blocks(): void {
+        $text = new block(block::TYPE_TEXT, 1905000, 952500, ['Hello world']);
+        $text->cx = 2857500;
+        $text->cy = 1905000;
+        $parsed = (object) ['title' => null, 'section' => null, 'blocks' => [$text]];
+
+        $out = (new \local_lessonimportpptx\pptx\slide_html_builder('#ffffff'))->build($parsed);
+
+        $this->assertStringContainsString('width:1280px;height:720px', $out->html);
+        $this->assertStringContainsString(
+            'position:absolute;left:100px;top:200px;width:300px;height:200px;',
+            $out->html
+        );
+        $this->assertStringContainsString('<p>Hello world</p>', $out->html);
+    }
+
+    /**
+     * The canvas builder registers images (renaming WMF/EMF to the converted
+     * PNG) and references them by @@PLUGINFILE@@ link.
+     */
+    public function test_slide_canvas_registers_images(): void {
+        $img = new block(block::TYPE_IMAGE, 0, 0, 'ppt/media/pic.wmf');
+        $img->cx = 952500;
+        $img->cy = 952500;
+        $parsed = (object) ['title' => null, 'section' => null, 'blocks' => [$img]];
+
+        $out = (new \local_lessonimportpptx\pptx\slide_html_builder())->build($parsed);
+
+        $this->assertStringContainsString('@@PLUGINFILE@@/pic.png', $out->html);
+        $this->assertSame('ppt/media/pic.wmf', $out->images['pic.png']);
+    }
+
+    /**
+     * The bundled LibreOffice renderer satisfies the render_backend contract,
+     * so it is substitutable wherever the importer expects a backend.
+     */
+    public function test_renderer_implements_render_backend(): void {
+        $this->assertInstanceOf(
+            \local_lessonimportpptx\office\render_backend::class,
+            new \local_lessonimportpptx\office\renderer()
+        );
+    }
+
+    /**
      * With the card-group option on, an image sitting beside text (a column)
      * becomes a click-to-enlarge card, not a plain picture, while staying in
      * its column beside the text.
