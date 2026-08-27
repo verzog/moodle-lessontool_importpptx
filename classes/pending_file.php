@@ -38,6 +38,9 @@ class pending_file {
     /** @var string The file area holding a pending upload. */
     const FILEAREA = 'import';
 
+    /** @var string Session key under which completed inline imports are recorded. */
+    const IMPORTED_SESSION_KEY = 'local_lessonimportpptx_imported';
+
     /**
      * Copies a draft-area upload into durable storage keyed by the draft id.
      *
@@ -92,5 +95,41 @@ class pending_file {
     public static function delete(\context_module $context, int $itemid): void {
         $fs = get_file_storage();
         $fs->delete_area_files($context->id, self::COMPONENT, self::FILEAREA, $itemid);
+    }
+
+    /**
+     * Records that an upload's inline import completed, keyed by context and item id.
+     *
+     * A confirmation submitted twice imports on the first request and finds the
+     * staging area empty on the second. This marker lets that second request tell
+     * "already imported" (stay quiet, the first request reported success) from a
+     * staging area cleared for another reason — cancelled elsewhere, or purged by
+     * the cleanup task — which warrants a warning that nothing was imported.
+     *
+     * @param \context_module $context The lesson's module context.
+     * @param int $itemid The staged upload's item id.
+     * @return void
+     */
+    public static function mark_imported(\context_module $context, int $itemid): void {
+        global $SESSION;
+        $imported = $SESSION->{self::IMPORTED_SESSION_KEY} ?? [];
+        if (!is_array($imported)) {
+            $imported = [];
+        }
+        $imported[$context->id . ':' . $itemid] = true;
+        $SESSION->{self::IMPORTED_SESSION_KEY} = $imported;
+    }
+
+    /**
+     * Whether an upload's inline import was recorded as completed in this session.
+     *
+     * @param \context_module $context The lesson's module context.
+     * @param int $itemid The staged upload's item id.
+     * @return bool True when this upload has already been imported.
+     */
+    public static function was_imported(\context_module $context, int $itemid): bool {
+        global $SESSION;
+        $imported = $SESSION->{self::IMPORTED_SESSION_KEY} ?? [];
+        return is_array($imported) && !empty($imported[$context->id . ':' . $itemid]);
     }
 }

@@ -55,6 +55,7 @@ $string['fontsizekeep'] = 'Keep the slide\'s size';
 $string['fontsizeoption'] = '{$a} pt';
 $string['import'] = 'Import';
 $string['importmodeeditable'] = 'Editable content (text and images)';
+$string['importexpired'] = 'That upload is no longer available to import — the confirmation may have expired, or it was cancelled elsewhere. Nothing was imported; please upload the presentation again.';
 $string['importmodeimages'] = 'Faithful images (one image per slide)';
 $string['importpptx'] = 'Import PowerPoint';
 $string['importresult'] = 'Imported {$a} pages from the presentation.';
