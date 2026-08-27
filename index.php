@@ -87,12 +87,15 @@ if (optional_param('confirm', 0, PARAM_BOOL) && confirm_sesskey()) {
     $pendingid = required_param('pendingid', PARAM_INT);
     $file = \local_lessonimportpptx\pending_file::get($context, $pendingid);
     if ($file === null) {
-        redirect(
-            $returnurl,
-            get_string('errornoslides', 'local_lessonimportpptx'),
-            null,
-            \core\output\notification::NOTIFY_ERROR
-        );
+        // The staged upload is gone. The usual cause is that this confirmation
+        // was submitted twice (a double click, or the browser re-issuing the
+        // POST while the import ran): the first request already imported the
+        // deck and cleared the staging area, so there is nothing left for this
+        // one to do. That is not a "no slides" failure — the pages exist and the
+        // request that did the work has already queued its own success message.
+        // Return quietly to the edit page rather than raising a misleading error
+        // alongside that success.
+        redirect($returnurl);
     }
     $options = [
         'imagemaxdim' => optional_param('imagemaxdim', 1600, PARAM_INT),
