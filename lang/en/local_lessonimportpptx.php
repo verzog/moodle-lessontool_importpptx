@@ -54,6 +54,7 @@ $string['filewithpdf_help'] = 'Upload a PowerPoint (.pptx) presentation or a PDF
 $string['fontsizekeep'] = 'Keep the slide\'s size';
 $string['fontsizeoption'] = '{$a} pt';
 $string['import'] = 'Import';
+$string['importexpired'] = 'That upload is no longer available to import — the confirmation may have expired, or it was cancelled elsewhere. Nothing was imported; please upload the presentation again.';
 $string['importmodeeditable'] = 'Editable content (text and images)';
 $string['importmodeimages'] = 'Faithful images (one image per slide)';
 $string['importpptx'] = 'Import PowerPoint';

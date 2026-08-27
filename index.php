@@ -87,11 +87,23 @@ if (optional_param('confirm', 0, PARAM_BOOL) && confirm_sesskey()) {
     $pendingid = required_param('pendingid', PARAM_INT);
     $file = \local_lessonimportpptx\pending_file::get($context, $pendingid);
     if ($file === null) {
+        // The staged upload is gone. If this session already imported it, this is
+        // a duplicate confirmation (a double click, or the browser re-issuing the
+        // POST): the first request created the pages and queued its own success
+        // message, so return quietly rather than adding a misleading "no slides"
+        // error alongside it.
+        if (\local_lessonimportpptx\pending_file::was_imported($context, $pendingid)) {
+            redirect($returnurl);
+        }
+        // Otherwise the upload was never imported — the confirmation link is stale
+        // (cancelled in another tab, or expired and purged by the cleanup task).
+        // Say so plainly instead of implying either success or a slide-parsing
+        // failure, so the user knows to upload again.
         redirect(
             $returnurl,
-            get_string('errornoslides', 'local_lessonimportpptx'),
+            get_string('importexpired', 'local_lessonimportpptx'),
             null,
-            \core\output\notification::NOTIFY_ERROR
+            \core\output\notification::NOTIFY_WARNING
         );
     }
     $options = [
