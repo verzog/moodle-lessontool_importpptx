@@ -28,18 +28,35 @@ The tag name is `v` followed by the release string: release `1.12.3` is tagged
 2. Update **both** fields in `version.php` (raise `$plugin->version`, set
    `$plugin->release`).
 3. Add a section for the new release at the top of `CHANGELOG.md`.
-4. Commit those together, e.g. `Release 1.12.3`.
-5. Tag that commit and push the tag:
+4. Commit those together, e.g. `Release 1.12.3`, and push `main`.
+5. Cut the tag — either via a GitHub Release (recommended, below) or on the
+   command line:
 
    ```bash
    git tag -a v1.12.3 -m "v1.12.3"
-   git push origin main
    git push origin v1.12.3
    ```
 
 6. On the plugin's moodle.org page, add a new version pointing at the new tag
    (or upload a ZIP of that tag). A bugfix update to an already-approved plugin
    goes through a lightweight review, not the full initial-approval process.
+
+## Cutting the tag via a GitHub Release (recommended)
+
+The simplest way to create and push the tag is to publish a GitHub Release,
+which cuts the tag from the target branch for you — no local tag push needed:
+
+1. Go to **Releases → Draft a new release**
+   (`https://github.com/verzog/moodle-lessontool_importpptx/releases/new`).
+2. **Choose a tag** → type the new tag (e.g. `v1.12.3`). It will read
+   *"will be created from the target when you publish this release."*
+3. **Target** → `main` (the commit whose `version.php` holds this release).
+4. Set the **title** to the tag name and click **Generate release notes** to
+   pull in the merged changes since the last tag.
+5. Leave the label on **Latest** for a production release.
+6. **Publish release.** This creates and pushes the tag in one step.
+
+Then point the moodle.org version at that tag as in step 6 above.
 
 ## Checking for drift
 
