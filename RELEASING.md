@@ -60,7 +60,7 @@ Do this only **after** the release commit has been merged to `main` (step 2),
 so the tag lands on already-validated code:
 
 1. Go to **Releases → Draft a new release**
-   (`https://github.com/verzog/moodle-lessontool_importpptx/releases/new`).
+   (`https://github.com/verzog/moodle-local_lessonimportpptx/releases/new`).
 2. **Choose a tag** → type the new tag (e.g. `v1.12.3`). It will read
    *"will be created from the target when you publish this release."*
 3. **Target** → `main` (which now holds the merged, CI-passed release commit).
